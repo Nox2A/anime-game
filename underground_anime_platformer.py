@@ -1,3 +1,18 @@
+# Utility: draw a button with a background image and black outline covering corners
+# Utility: draw a button with a background image and black outline covering corners
+def draw_button_with_bg(surf, rect, bg_img, border_radius=18):
+    button_surf = pg.Surface(rect.size, pg.SRCALPHA)
+    # Blit the background image, clipped to the button rect
+    if bg_img:
+        button_surf.blit(bg_img, (0, 0), area=pg.Rect(0, 0, rect.w, rect.h))
+    # Mask to rounded rect
+    mask = pg.Surface(rect.size, pg.SRCALPHA)
+    pg.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=border_radius)
+    button_surf.blit(mask, (0, 0), special_flags=pg.BLEND_RGBA_MULT)
+    # Blit to main surface
+    surf.blit(button_surf, rect.topleft)
+    # Draw the black outline
+    pg.draw.rect(surf, (0, 0, 0), rect, width=7, border_radius=border_radius)
 import pygame as pg, math, random, sys, os
 import json
 from typing import List, Dict, Optional, Tuple
@@ -80,12 +95,22 @@ def load_player_data(player):
         player.from_dict(data)
     except Exception:
         pass
-screen = pg.display.set_mode((WIDTH, HEIGHT))
-fullscreen = False
+screen = pg.display.set_mode((WIDTH, HEIGHT), pg.FULLSCREEN)
+fullscreen = True
 pg.display.set_caption("Anime Underground Platformer")
 clock = pg.time.Clock()
 font20 = pg.font.SysFont("arial", 20)
 font16 = pg.font.SysFont("arial", 16)
+
+# Load background image (after display is initialized)
+game_bg_img = None
+try:
+    game_bg_img = pg.image.load("assets/background.png").convert()
+    game_bg_img = pg.transform.scale(game_bg_img, (WIDTH, HEIGHT))
+    print("[DEBUG] Background image loaded successfully.")
+except Exception as e:
+    print(f"[DEBUG] Failed to load background image: {e}")
+    game_bg_img = None
 
 dragging_item = None  # (item, from_slot)
 drag_offset = (0, 0)
@@ -216,7 +241,10 @@ def run_game():
                 death_time = now
 
         # Drawing
-        screen.fill((30,30,40))
+        if game_bg_img:
+            screen.blit(game_bg_img, (0, 0))
+        else:
+            screen.fill((30,30,40))
         stage.draw(screen)
         player.draw(screen)
         # Always show bottom inventory bar
@@ -227,6 +255,14 @@ def run_game():
             overlay.fill((0, 0, 0, 160))
             screen.blit(overlay, (0, 0))
             draw_full_inventory_with_drag(screen, player)
+        # Portal to next level
+        if stage.portal and player.rect.colliderect(stage.portal):
+            stage_num += 1
+            stage = Stage(stage_num)
+            player.rect.x, player.rect.y = 100, HEIGHT-200
+            player.hp = player.max_hp
+            player.invincible_until = pg.time.get_ticks() + 2000
+
         pg.display.flip()
         if game_over:
             # Show game over message
@@ -344,6 +380,9 @@ def draw_full_inventory_with_drag(surf, player):
     for i in range(10):
         r = pg.Rect(startx + i*(size+margin), starty, size, size)
         slot_rects.append(r)
+        # Fill slot with light grey
+        pg.draw.rect(surf, (230,230,230), r)
+        # Draw border
         pg.draw.rect(surf, (200,200,200), r, 3)
         if player.inventory[i] and (not dragging_item or dragging_item[1] != i):
             player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
@@ -383,13 +422,17 @@ def draw_inventory(surf, player):
     num_slots = 10
     total_width = num_slots * size + (num_slots - 1) * margin
     startx = 20
-    starty = HEIGHT - size - 20
+    starty = HEIGHT - size  # Start at the very bottom
+    starty += 20  # Move it even further down (off the main play area)
     global dragging_item, drag_pos
     mouse_x, mouse_y = pg.mouse.get_pos()
     slot_rects = []
     for i in range(num_slots):
         r = pg.Rect(startx + i * (size + margin), starty, size, size)
         slot_rects.append(r)
+        # Fill slot with light grey
+        pg.draw.rect(surf, (230,230,230), r)
+        # Draw border
         pg.draw.rect(surf, (200,200,200), r, 3)
         if player.inventory[i] and (not dragging_item or dragging_item[1] != i):
             player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
@@ -590,12 +633,8 @@ def show_start_screen():
             else:
                 shake_phases[i] = 0
             shaken_rect = rect.move(shake_offset, 0)
-            if play_btn_img:
-                screen.blit(play_btn_img, shaken_rect)
-            else:
-                pg.draw.rect(screen, (255,255,0), shaken_rect, border_radius=18)
-            outline_rect = shaken_rect.inflate(-4, -4)
-            pg.draw.rect(screen, (0,0,0), outline_rect, width=7, border_radius=18)
+            # Use the new utility for button background and outline
+            draw_button_with_bg(screen, shaken_rect, play_btn_img if play_btn_img else None, border_radius=18)
             grass_green = (50, 200, 50)
             txt = font20.render(button_labels[i], True, grass_green)
             screen.blit(txt, (shaken_rect.x + shaken_rect.w//2 - txt.get_width()//2, shaken_rect.y + shaken_rect.h//2 - txt.get_height()//2))
@@ -727,10 +766,10 @@ class Item:
         else:  # armour piece
             # Ninja armor sprites
             ninja_sprites = {
-                "helmet": "ninja-helmet.png",
-                "chest": "ninja-chestplate.png",
-                "legs": "ninja-legs.png",
-                "boots": "ninja-boots.png"
+                "helmet": "assets/ninja-helmet.png",
+                "chest": "assets/ninja-chestplate.png",
+                "legs": "assets/ninja-legs.png",
+                "boots": "assets/ninja-boots.png"
             }
             prefix = self.name.split()[0] if self.name else ""
             slot = self.type
@@ -750,8 +789,22 @@ class Item:
                     pg.draw.circle(surf, c, (x+size//2, y+size//2), size//2)
             else:
                 pg.draw.circle(surf, c, (x+size//2, y+size//2), size//2)
-        txt = font16.render(self.rarity[0].upper(), True, (0,0,0))
-        surf.blit(txt, (x+4, y+4))
+        # Draw a thick, vivid 'L' rarity indicator: diagonal (middle left to bottom left), then horizontal (bottom left to middle bottom)
+        rarity_stripe_colors = {
+            "common": (200, 200, 200),         # bright grey
+            "uncommon": (0, 255, 0),           # bright green
+            "rare": (0, 120, 255),             # bright blue
+            "holy": (200, 0, 255),             # bright purple
+            "godlike": (255, 220, 40),         # gold/yellow
+        }
+        stripe_col = rarity_stripe_colors.get(self.rarity, (200,200,200))
+        stripe_surface = pg.Surface((size, size), pg.SRCALPHA)
+        thickness = max(5, size//6)
+        # Diagonal: from (0, size//4) to (0, size-1) (start higher for longer line)
+        pg.draw.line(stripe_surface, stripe_col, (0, size//4), (0, size-1), thickness)
+        # Horizontal: from (0, size-1) to (size//2 + size//6, size-1) (extend further right)
+        pg.draw.line(stripe_surface, stripe_col, (0, size-1), (size//2 + size//6, size-1), thickness)
+        surf.blit(stripe_surface, (x, y))
 
 def random_weapon(rarity: Optional[str]=None) -> Item:
     """
@@ -915,6 +968,9 @@ class Player(Entity):
             for e in enemies:
                 if dist(self.rect.center, e.rect.center) < r + e.rect.w//2:
                     e.hp -= dmg
+                    # Instantly max awareness if attacked
+                    e.awareness = 5.0
+                    e.aware = True
             return
         if now - self.last_attack < self.weapon.attack_speed:
             return
@@ -937,6 +993,9 @@ class Player(Entity):
         for e in enemies:
             if dist(self.rect.center, e.rect.center) < r + e.rect.w//2:
                 e.hp -= dmg
+                # Instantly max awareness if attacked
+                e.awareness = 5.0
+                e.aware = True
     def block(self, now):
         """
         Block with a sword if available.
@@ -1049,10 +1108,21 @@ class ThrownRapier:
 
 # ----------------------------- ENEMY & BOSS --------------------------
 class Enemy(Entity):
+    def has_line_of_sight(self, player, platforms):
+        """
+        Returns True if there is a clear line of sight between enemy and player (not blocked by platforms).
+        """
+        x1, y1 = self.rect.centerx, self.rect.centery
+        x2, y2 = player.rect.centerx, player.rect.centery
+        for p in platforms:
+            if p.clipline((x1, y1), (x2, y2)):
+                return False
+        return True
     """
     Enemy character, inherits from Entity.
     """
     enemy_sprite = None  # class variable for sprite
+    qmark_img = None  # class variable for question mark image
     def __init__(self, x, y, hp, dmg, colour):
         """
         Initialize an enemy.
@@ -1060,28 +1130,91 @@ class Enemy(Entity):
         super().__init__(x, y, 40, 50, hp, colour)
         self.dmg = dmg
         self.ai_timer = 0
+        self.awareness = 0.0  # 0 to 5
+        self.aware = False
+        self.awareness_timer = 0
+        self.awareness_gain = 0.0
+        self.last_player_attack = 0
+        if Enemy.qmark_img is None:
+            try:
+                Enemy.qmark_img = pg.image.load("assets/qmark.png").convert_alpha()
+            except Exception as e:
+                print("Failed to load qmark.png:", e)
+                Enemy.qmark_img = None
     def ai(self, player, platforms):
         """
-        Simple AI movement logic for the enemy.
+        Improved AI: enemies avoid walking off ledges and can jump.
         """
         self.ai_timer += 1
-        if self.ai_timer % 60 == 0:
-            self.vx = random.choice([-1,0,1])  # slower movement
-        if self.rect.centerx < player.rect.centerx: self.vx += 0.05
-        else: self.vx -= 0.05
-        self.vx = max(-1.5, min(1.5, self.vx))
-        if random.random() < 0.005 and self.on_ground:
-            self.vy = -8
+        # Awareness logic
+        if not self.aware:
+            px, py = player.rect.centerx, player.rect.centery
+            ex, ey = self.rect.centerx, self.rect.centery
+            dist = math.hypot(px-ex, py-ey)
+            facing_vec = self.facing
+            player_dir = 1 if px > ex else -1
+            now = pg.time.get_ticks()
+            los = self.has_line_of_sight(player, platforms)
+            # Awareness field: reduced to 100px, and must have line of sight
+            if ((player_dir != facing_vec) and (dist > 100 or not los)):
+                self.awareness_gain = 0.0
+                # Start timer for awareness decrease
+                if not hasattr(self, 'awareness_lose_timer') or self.awareness_lose_timer is None:
+                    self.awareness_lose_timer = now
+                elif now - self.awareness_lose_timer > 3000:
+                    self.awareness = max(0.0, self.awareness - 1.0/60.0)  # Lose awareness slowly
+            else:
+                if los and dist < 100:
+                    self.awareness_gain = 1.0/60.0  # 1 per second
+                    self.awareness_lose_timer = None
+                else:
+                    self.awareness_gain = 0.0
+            # If attacked, instantly max awareness
+            if self.last_player_attack and now - self.last_player_attack < 200:
+                self.awareness = 5.0
+            else:
+                self.awareness += self.awareness_gain
+            if self.awareness >= 5.0:
+                self.aware = True
+        # Ledge awareness: check if next step is a ledge
+        step = int(self.vx/abs(self.vx)) if self.vx != 0 else 0
+        if step != 0 and self.on_ground:
+            test_rect = self.rect.move(step*2, 2)
+            test_rect.y += self.rect.h//2
+            on_platform = False
+            for p in platforms:
+                if p.colliderect(test_rect):
+                    on_platform = True
+                    break
+            if not on_platform:
+                self.vx = 0
+        if self.aware:
+            if self.ai_timer % 60 == 0:
+                self.vx = random.choice([-1,0,1])
+            if self.rect.centerx < player.rect.centerx: self.vx += 0.05
+            else: self.vx -= 0.05
+            self.vx = max(-1.5, min(1.5, self.vx))
+            if random.random() < 0.005 and self.on_ground:
+                self.vy = -8
+        else:
+            self.vx = 0
     def update(self, player, platforms):
         """
-        Update enemy state and handle collisions.
+        Update enemy state, handle collisions, and apply fall damage.
         """
         self.ai(player, platforms)
         self.vy += GRAVITY
+        prev_vy = self.vy
+        prev_on_ground = self.on_ground
         self.move(self.vx, self.vy, platforms)
+        # Fall damage: if just landed and was falling fast
+        if not prev_on_ground and self.on_ground and prev_vy > 10:
+            self.hp -= int((prev_vy-10)*2)
         # Only damage player if enemy is alive and player is alive
         if self.hp > 0 and player.hp > 0 and self.rect.colliderect(player.rect):
             if pg.time.get_ticks() >= getattr(player, 'invincible_until', 0):
+                self.awareness = 5.0
+                self.aware = True
                 player.hp -= self.dmg
                 self.rect.x += sign(self.rect.centerx - player.rect.centerx) * 30
     def draw(self, surf):
@@ -1093,7 +1226,19 @@ class Enemy(Entity):
             surf.blit(img, self.rect)
         else:
             pg.draw.rect(surf, self.colour, self.rect)
-        # Removed red debug outline
+        # Awareness indicator: only show if currently gaining awareness
+        if not self.aware and self.awareness_gain > 0 and Enemy.qmark_img:
+            # Awareness fill: darken qmark from bottom up
+            # Scale qmark to enemy width (max 1.2x width, keep aspect)
+            scale_w = min(int(self.rect.w * 1.2), Enemy.qmark_img.get_width()*2)
+            scale_h = int(scale_w * Enemy.qmark_img.get_height() / Enemy.qmark_img.get_width())
+            qmark = pg.transform.smoothscale(Enemy.qmark_img, (scale_w, scale_h)).copy()
+            fill = min(1.0, self.awareness/5.0)
+            h = qmark.get_height()
+            darken = pg.Surface((qmark.get_width(), int(h*fill)), pg.SRCALPHA)
+            darken.fill((0,0,0,120))
+            qmark.blit(darken, (0, h-int(h*fill)))
+            surf.blit(qmark, (self.rect.centerx - qmark.get_width()//2, self.rect.top - qmark.get_height() - 8))
         self.draw_bar(surf)
 
 class Boss(Enemy):
@@ -1150,12 +1295,16 @@ class Stage:
         self.spawn_initial_mobs()
     def make_platforms(self):
         """
-        Generate platforms for the level.
+        Generate platforms for the level. Ensure at least one is in jumping reach from the ground.
         """
         base = [pg.Rect(0, HEIGHT-40, WIDTH, 40)]
         min_gap = 140  # Increased gap for easier jumping between floors
         platforms = []
         attempts = 0
+        max_jump = 160  # Player can jump about 160px
+        # First, guarantee one reachable platform
+        must_have = pg.Rect(random.randint(100, WIDTH-200), HEIGHT-40-max_jump, random.randint(150, 300), 20)
+        platforms.append(must_have)
         while len(platforms) < 14 and attempts < 100:
             x = random.randint(100, WIDTH-200)
             y = random.randint(200, HEIGHT-100)
