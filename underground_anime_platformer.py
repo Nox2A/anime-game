@@ -81,6 +81,7 @@ def load_player_data(player):
     except Exception:
         pass
 screen = pg.display.set_mode((WIDTH, HEIGHT))
+fullscreen = False
 pg.display.set_caption("Anime Underground Platformer")
 clock = pg.time.Clock()
 font20 = pg.font.SysFont("arial", 20)
@@ -90,13 +91,161 @@ dragging_item = None  # (item, from_slot)
 drag_offset = (0, 0)
 drag_pos = (0, 0)
 
-def draw_inventory(surf, player):
-    """Draw the inventory UI, including items, armor, weapon, and shield."""
+# ----------------------------- MAIN GAME LOOP --------------------------
+def run_game():
+    player = Player(100, HEIGHT-200)
+    load_player_data(player)
+    stage_num = 1
+    stage = Stage(stage_num)
+    player.hp = player.max_hp
+    player.invincible_until = pg.time.get_ticks() + 3000  # 3 seconds invincibility at spawn
+    running = True
+    show_inventory = False
+    game_over = False
+    global screen, fullscreen
+    while running:
+        dt = clock.tick(FPS)
+        now = pg.time.get_ticks()
+        for event in pg.event.get():
+            if event.type == pg.QUIT:
+                save_player_data(player)
+                running = False
+            if event.type == pg.KEYDOWN:
+                # Robust F11 fullscreen toggle
+                if event.key == pg.K_ESCAPE:
+                    save_player_data(player)
+                    running = False
+                if event.key == pg.K_e:
+                    show_inventory = not show_inventory
+                # F11 toggle: support both symbolic and numeric keycode, and try toggle_fullscreen
+                if event.key == pg.K_F11 or event.key == 1073741892:
+                    fullscreen = not fullscreen
+                    try:
+                        # Try pygame's toggle_fullscreen (works on some platforms)
+                        pg.display.toggle_fullscreen()
+                    except Exception:
+                        # Fallback to set_mode
+                        if fullscreen:
+                            screen = pg.display.set_mode((WIDTH, HEIGHT), pg.FULLSCREEN)
+                        else:
+                            screen = pg.display.set_mode((WIDTH, HEIGHT))
+                    # Ensure global screen is updated
+                    globals()['screen'] = screen
+                if event.key == pg.K_SPACE:
+                    # Try to pick up an item if in range
+                    pickup_range = 60
+                    for drop in stage.drops[:]:
+                        if dist(player.rect.center, (drop.x, drop.y)) < pickup_range:
+                            # Find first empty inventory slot
+                            for i in range(len(player.inventory)):
+                                if player.inventory[i] is None:
+                                    player.inventory[i] = drop
+                                    stage.drops.remove(drop)
+                                    break
+                            break
+            # Scroll wheel inventory selection
+            if event.type == pg.MOUSEWHEEL:
+                player.selected = (player.selected - event.y) % len(player.inventory)
+            # Drag-and-drop for armor in inventory overlay (only in game)
+            if show_inventory:
+                margin, size = 20, 50
+                startx, starty = 100, 100
+                center_x = WIDTH // 2
+                center_y = HEIGHT // 2 + 40
+                armor_slots = ["helmet", "chest", "legs", "boots"]
+                slot_rects = [pg.Rect(startx + i*(size+margin), starty, size, size) for i in range(10)]
+                armor_rects = [(slot, pg.Rect(center_x-80, center_y-40+idx*45, 40, 40)) for idx, slot in enumerate(armor_slots)]
+                global dragging_item, drag_offset, drag_pos
+                mouse_x, mouse_y = pg.mouse.get_pos()
+                mouse_held = pg.mouse.get_pressed()[0]
+                if event.type == pg.MOUSEBUTTONDOWN and event.button == 1 and not dragging_item:
+                    for i, r in enumerate(slot_rects):
+                        if r.collidepoint(event.pos) and player.inventory[i]:
+                            dragging_item = (player.inventory[i], i)
+                            drag_offset = (event.pos[0] - r.x, event.pos[1] - r.y)
+                            break
+                    # Start dragging from armor slots (for unequip)
+                    for slot, slot_rect in armor_rects:
+                        if slot_rect.collidepoint(event.pos) and player.armor[slot]:
+                            dragging_item = (player.armor[slot], slot)
+                            drag_offset = (event.pos[0] - slot_rect.x, event.pos[1] - slot_rect.y)
+                            break
+                if event.type == pg.MOUSEBUTTONUP and event.button == 1 and dragging_item:
+                    item, from_slot = dragging_item
+                    dropped = False
+                    # Dropping onto armor slot (equip)
+                    for slot, slot_rect in armor_rects:
+                        if slot_rect.collidepoint(event.pos):
+                            if item.type == slot:
+                                # If equipping from inventory
+                                if isinstance(from_slot, int):
+                                    player.armor[slot] = item
+                                    player.inventory[from_slot] = None
+                                # If swapping between armor slots
+                                elif isinstance(from_slot, str):
+                                    player.armor[slot] = item
+                                    player.armor[from_slot] = None
+                                player.calc_set_bonus()
+                                dropped = True
+                                break
+                    # Dropping onto inventory slot (unequip)
+                    if not dropped and isinstance(from_slot, str):
+                        for i, r in enumerate(slot_rects):
+                            if r.collidepoint(event.pos) and player.inventory[i] is None:
+                                player.inventory[i] = item
+                                player.armor[from_slot] = None
+                                dropped = True
+                                break
+                    dragging_item = None
+                if dragging_item and mouse_held:
+                    drag_pos = (mouse_x, mouse_y)
+                elif dragging_item and not mouse_held:
+                    dragging_item = None
+
+        # Pause game logic if inventory overlay is open
+        if not show_inventory and not game_over:
+            player.update(stage.platforms, stage.mobs, now)
+            stage.update(player)
+            for mob in stage.mobs:
+                mob.update(player, stage.platforms)
+            # Debug: print number of enemies
+            # Check for player death
+            if player.hp <= 0:
+                player.move_armor_to_inventory()
+                game_over = True
+                death_time = now
+
+        # Drawing
+        screen.fill((30,30,40))
+        stage.draw(screen)
+        player.draw(screen)
+        # Always show bottom inventory bar
+        draw_inventory(screen, player)
+        # Show full inventory overlay if toggled
+        if show_inventory:
+            overlay = pg.Surface((WIDTH, HEIGHT), flags=pg.SRCALPHA)
+            overlay.fill((0, 0, 0, 160))
+            screen.blit(overlay, (0, 0))
+            draw_full_inventory_with_drag(screen, player)
+        pg.display.flip()
+        if game_over:
+            # Show game over message
+            txt = font20.render("GAME OVER", True, (255, 50, 50))
+            screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - txt.get_height()//2))
+            pg.display.flip()
+            pg.time.wait(2000)
+            return
+
+def draw_full_inventory(surf, player):
+    # This is the original full inventory UI, centered on screen
     margin, size = 20, 50
     startx, starty = 100, 100
-    global dragging_item, drag_pos
+    global dragging_item, drag_offset, drag_pos
     mouse_x, mouse_y = pg.mouse.get_pos()
     slot_rects = []
+    armor_slots = ["helmet", "chest", "legs", "boots"]
+    armor_rects = []
+    # Inventory slots
     for i in range(10):
         r = pg.Rect(startx + i*(size+margin), starty, size, size)
         slot_rects.append(r)
@@ -105,14 +254,55 @@ def draw_inventory(surf, player):
             player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
         if i == player.selected:
             pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
+    # Armor slots
+    center_x = WIDTH // 2
+    center_y = HEIGHT // 2 + 40
+    for idx, slot in enumerate(armor_slots):
+        slot_y = center_y - 40 + idx*45
+        slot_rect = pg.Rect(center_x-80, slot_y, 40, 40)
+        armor_rects.append((slot, slot_rect))
+        pg.draw.rect(surf, (150,150,150), slot_rect, 3)
+        if player.armor[slot]:
+            player.armor[slot].draw(surf, slot_rect.x+5, slot_rect.y+5, 30)
+        label = font16.render(slot[0].upper(), True, (180,180,180))
+        surf.blit(label, (slot_rect.x-18, slot_rect.y+12))
+    # Drag and drop logic
+    mouse_held = pg.mouse.get_pressed()[0]
+    # Only start dragging on mouse down, keep dragging while held, drop on mouse up
+    for event in pg.event.get([pg.MOUSEBUTTONDOWN, pg.MOUSEBUTTONUP]):
+        if event.type == pg.MOUSEBUTTONDOWN and event.button == 1 and not dragging_item:
+            for i, r in enumerate(slot_rects):
+                if r.collidepoint(event.pos) and player.inventory[i]:
+                    dragging_item = (player.inventory[i], i)
+                    drag_offset = (event.pos[0] - r.x, event.pos[1] - r.y)
+                    break
+        if event.type == pg.MOUSEBUTTONUP and event.button == 1 and dragging_item:
+            item, from_slot = dragging_item
+            dropped = False
+            for slot, slot_rect in armor_rects:
+                if slot_rect.collidepoint(event.pos):
+                    if item.type == slot:
+                        player.armor[slot] = item
+                        player.inventory[from_slot] = None
+                        player.calc_set_bonus()
+                        dropped = True
+                        break
+            dragging_item = None
+    # If dragging, update drag position to current mouse
+    if dragging_item and mouse_held:
+        drag_pos = (mouse_x, mouse_y)
+    elif dragging_item and not mouse_held:
+        # If mouse released outside event, cancel drag
+        dragging_item = None
+    # Draw dragged item
     if dragging_item:
         item, from_slot = dragging_item
         item.draw(surf, mouse_x - drag_offset[0], mouse_y - drag_offset[1], size-20)
-        r = pg.Rect(startx + i*(size+margin), starty, size, size)
+        r = pg.Rect(startx + from_slot*(size+margin), starty, size, size)
         pg.draw.rect(surf, (200,200,200), r, 3)
-        if player.inventory[i]:
-            player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
-        if i == player.selected:
+        if player.inventory[from_slot]:
+            player.inventory[from_slot].draw(surf, r.x+10, r.y+10, size-20)
+        if from_slot == player.selected:
             pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
     center_x = WIDTH // 2
     center_y = HEIGHT // 2 + 40
@@ -140,10 +330,85 @@ def draw_inventory(surf, player):
     tx = startx
     surf.blit(font20.render(f"XP: {player.xp}", True, (255,255,255)), (tx, grid_bottom))
     surf.blit(font20.render("E to close", True, (255,255,255)), (tx, grid_bottom + 30))
+
+
+# --- Enhanced inventory overlay for drag-and-drop in main game only ---
+def draw_full_inventory_with_drag(surf, player):
+    global dragging_item, drag_offset, drag_pos
+    margin, size = 20, 50
+    startx, starty = 100, 100
+    mouse_x, mouse_y = pg.mouse.get_pos()
+    slot_rects = []
+    armor_slots = ["helmet", "chest", "legs", "boots"]
+    # Inventory slots
+    for i in range(10):
+        r = pg.Rect(startx + i*(size+margin), starty, size, size)
+        slot_rects.append(r)
+        pg.draw.rect(surf, (200,200,200), r, 3)
+        if player.inventory[i] and (not dragging_item or dragging_item[1] != i):
+            player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
+        if i == player.selected:
+            pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
+    # Armor slots
+    center_x = WIDTH // 2
+    center_y = HEIGHT // 2 + 40
+    for idx, slot in enumerate(armor_slots):
+        slot_y = center_y - 40 + idx*45
+        slot_rect = pg.Rect(center_x-80, slot_y, 40, 40)
+        pg.draw.rect(surf, (150,150,150), slot_rect, 3)
+        if player.armor[slot]:
+            player.armor[slot].draw(surf, slot_rect.x+5, slot_rect.y+5, 30)
+        label = font16.render(slot[0].upper(), True, (180,180,180))
+        surf.blit(label, (slot_rect.x-18, slot_rect.y+12))
+    # Draw dragged item
+    if dragging_item:
+        item, from_slot = dragging_item
+        item.draw(surf, mouse_x - drag_offset[0], mouse_y - drag_offset[1], size-20)
+        if isinstance(from_slot, int):
+            r = pg.Rect(startx + from_slot*(size+margin), starty, size, size)
+            pg.draw.rect(surf, (200,200,200), r, 3)
+            if player.inventory[from_slot]:
+                player.inventory[from_slot].draw(surf, r.x+10, r.y+10, size-20)
+            if from_slot == player.selected:
+                pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
+
+# ----------------------------- ENTRY POINT ----------------------------
+
+
+
+def draw_inventory(surf, player):
+    """Draw the inventory UI, including items, armor, weapon, and shield."""
+    # Only show the first line of inventory at the left bottom, stretching horizontally
+    margin, size = 10, 50
+    num_slots = 10
+    total_width = num_slots * size + (num_slots - 1) * margin
+    startx = 20
+    starty = HEIGHT - size - 20
+    global dragging_item, drag_pos
+    mouse_x, mouse_y = pg.mouse.get_pos()
+    slot_rects = []
+    for i in range(num_slots):
+        r = pg.Rect(startx + i * (size + margin), starty, size, size)
+        slot_rects.append(r)
+        pg.draw.rect(surf, (200,200,200), r, 3)
+        if player.inventory[i] and (not dragging_item or dragging_item[1] != i):
+            player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
+        if i == player.selected:
+            pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
+    if dragging_item:
+        item, from_slot = dragging_item
+        item.draw(surf, mouse_x - drag_offset[0], mouse_y - drag_offset[1], size-20)
+        if isinstance(from_slot, int):
+            r = pg.Rect(startx + from_slot * (size + margin), starty, size, size)
+            pg.draw.rect(surf, (200,200,200), r, 3)
+            if player.inventory[from_slot]:
+                player.inventory[from_slot].draw(surf, r.x+10, r.y+10, size-20)
+            if from_slot == player.selected:
+                pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
 # ----------- TAVERN SCREEN -----------
 def show_tavern(screen, player):
     try:
-        tavern_bg = pg.image.load("tavern.png").convert_alpha()
+        tavern_bg = pg.image.load("assets/tavern.png").convert_alpha()
         tavern_bg = pg.transform.scale(tavern_bg, (WIDTH, HEIGHT))
     except Exception as e:
         print("Failed to load tavern.png:", e)
@@ -169,15 +434,26 @@ def show_tavern(screen, player):
             if event.type == pg.KEYDOWN:
                 if event.key == pg.K_ESCAPE:
                     tavern_waiting = False
-                    show_start_screen(player)
+                    show_start_screen()
                     return
                 if event.key == pg.K_e:
                     inv_open = not inv_open
-                if offer_idx is not None and event.key == pg.K_RETURN:
+                if inv_open and offer_idx is not None and event.key == pg.K_RETURN:
                     # Accept offer: remove item, add coins, show message
                     item = player.inventory[offer_idx]
                     if item:
-                        base = {"dagger": 15, "sword": 30, "rapier": 45}.get(item.type, 0)
+                        # Set base values for weapons and armor
+                        base_values = {
+                            "dagger": 15,
+                            "sword": 30,
+                            "rapier": 45,
+                            "helmet": 15,
+                            "chest": 35,
+                            "legs": 30,
+                            "boots": 20
+                        }
+                        # For armor, use item.type (helmet, chest, legs, boots)
+                        base = base_values.get(item.type, 0)
                         rarity_bonus = {"common": 0, "uncommon": 0.15, "rare": 0.20, "holy": 0.25, "godlike": 0.30}.get(item.rarity, 0)
                         coins = int(base * (1 + rarity_bonus))
                         player.coins += coins
@@ -186,35 +462,69 @@ def show_tavern(screen, player):
                         save_player_data(player)
                     offer_idx = None
             if inv_open and event.type == pg.MOUSEBUTTONDOWN and event.button == 3:
-                # Right click: check if on an item
+                # Right click: check if on an item in the overlay grid only
                 mx, my = pg.mouse.get_pos()
+                slot_found = False
                 for i in range(10):
                     r = pg.Rect(startx + i*(size+margin), starty, size, size)
-                    if r.collidepoint(mx, my) and player.inventory[i]:
-                        offer_idx = i
-                        offer_msg = None
-                        break
-        screen.fill((60,40,30))
+                    if r.collidepoint(mx, my):
+                        slot_found = True
+                        if player.inventory[i]:
+                            offer_idx = i
+                            offer_msg = None
+                        else:
+                            pass
+                            break
+                if not slot_found:
+                    pass
+            screen.fill((60, 40, 30))
         if tavern_bg:
             screen.blit(tavern_bg, (0,0))
         # Draw speech bubble above the guy in the image
         pg.draw.rect(screen, bubble_color, bubble_rect, border_radius=18)
         pg.draw.rect(screen, bubble_border, bubble_rect, width=3, border_radius=18)
         screen.blit(bubble_text, (bubble_rect.x+18, bubble_rect.y+18))
-        # Draw inventory if open
+        # Only show inventory and offer bubble if inventory is open
         if inv_open:
             overlay = pg.Surface((WIDTH, HEIGHT), flags=pg.SRCALPHA)
             overlay.fill((0, 0, 0, 160))
             screen.blit(overlay, (0, 0))
-            draw_inventory(screen, player)
-            # Draw offer bubble if right-clicked
+            # Draw overlay inventory grid with highlight
+            margin, size = 20, 50
+            startx, starty = 100, 100
+            for i in range(10):
+                r = pg.Rect(startx + i*(size+margin), starty, size, size)
+                pg.draw.rect(screen, (220,220,220), r, 4)
+                if player.inventory[i] and (offer_idx is None or offer_idx != i):
+                    player.inventory[i].draw(screen, r.x+10, r.y+10, size-20)
+                if i == player.selected:
+                    pg.draw.rect(screen, (255,255,0), r.inflate(8,8), 5)
+            # Draw dragged item if any (not used in tavern, but for consistency)
+            global dragging_item, drag_pos
+            mouse_x, mouse_y = pg.mouse.get_pos()
+            if dragging_item:
+                item, from_slot = dragging_item
+                item.draw(screen, mouse_x - drag_offset[0], mouse_y - drag_offset[1], size-20)
+                r = pg.Rect(startx + from_slot*(size+margin), starty, size, size)
+                pg.draw.rect(screen, (200,200,200), r, 3)
+                if player.inventory[from_slot]:
+                    player.inventory[from_slot].draw(screen, r.x+10, r.y+10, size-20)
+                if from_slot == player.selected:
+                    pg.draw.rect(screen, (255,255,0), r.inflate(8,8), 5)
             if offer_idx is not None:
                 r = pg.Rect(startx + offer_idx*(size+margin), starty, size, size)
-                bubble = pg.Rect(r.x, r.y-40, 170, 32)
-                pg.draw.rect(screen, (255,255,255), bubble, border_radius=10)
-                pg.draw.rect(screen, (0,0,0), bubble, width=2, border_radius=10)
-                txt = font16.render("want to offer this item?", True, (0,0,0))
-                screen.blit(txt, (bubble.x+8, bubble.y+6))
+                bubble = pg.Rect(r.x-10, r.y-60, size+20, 44)
+                # Draw a more visible bubble with a pointer
+                pg.draw.rect(screen, (255,255,180), bubble, border_radius=12)
+                pg.draw.rect(screen, (0,0,0), bubble, width=3, border_radius=12)
+                # Draw a triangle pointer
+                pointer = [(bubble.centerx-10, bubble.bottom), (bubble.centerx+10, bubble.bottom), (bubble.centerx, bubble.bottom+16)]
+                pg.draw.polygon(screen, (255,255,180), pointer)
+                pg.draw.polygon(screen, (0,0,0), pointer, width=2)
+                txt = font16.render("Do you want to sell?", True, (0,0,0))
+                screen.blit(txt, (bubble.x+12, bubble.y+10))
+                txt2 = font16.render("Press Enter to confirm", True, (80,80,80))
+                screen.blit(txt2, (bubble.x+12, bubble.y+24))
             if offer_msg:
                 msg_rect = pg.Rect(WIDTH//2-80, HEIGHT//2-100, 160, 32)
                 pg.draw.rect(screen, (255,255,200), msg_rect, border_radius=10)
@@ -225,14 +535,14 @@ def show_tavern(screen, player):
         clock.tick(60)
 
 # ----------- START SCREEN -----------
-def show_start_screen(player):
+def show_start_screen():
     waiting = True
     """
     Display the start screen with a play button and wait for the user to click to start the game.
     """
     # Restore all start screen variables
     try:
-        cover_img = pg.image.load("cover.png").convert_alpha()
+        cover_img = pg.image.load("assets/cover.png").convert_alpha()
         cover_img = pg.transform.scale(cover_img, (WIDTH, HEIGHT))
     except Exception as e:
         print("Failed to load cover.png:", e)
@@ -245,53 +555,28 @@ def show_start_screen(player):
     smeltery_rect = pg.Rect(WIDTH//2 - button_w//2, start_y + button_h + button_gap, button_w, button_h)
     tavern_rect = pg.Rect(WIDTH//2 - button_w//2, start_y + 2*(button_h + button_gap), button_w, button_h)
     try:
-        play_btn_img = pg.image.load("play-button.png").convert_alpha()
+        play_btn_img = pg.image.load("assets/play-button.png").convert_alpha()
         play_btn_img = pg.transform.scale(play_btn_img, (button_w, button_h))
     except Exception as e:
         print("Failed to load play-button.png:", e)
         play_btn_img = None
     shake_phases = [0, 0, 0]
+    # Create a dummy player for the tavern screen (not used for gameplay)
+    dummy_player = Player(100, HEIGHT-200)
+    load_player_data(dummy_player)
+    global screen
     while waiting:
         mouse_pos = pg.mouse.get_pos()
         hovered = [play_rect.collidepoint(mouse_pos), smeltery_rect.collidepoint(mouse_pos), tavern_rect.collidepoint(mouse_pos)]
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 pg.quit()
-                sys.exit()
+                return False
             if event.type == pg.MOUSEBUTTONDOWN:
                 if hovered[0]:
-                    waiting = False
+                    return True
                 if hovered[2]:
-                    show_tavern(screen, player)
-                    waiting = False
-        if not waiting:
-            break
-        screen.fill((0,0,0))
-        if cover_img:
-            screen.blit(cover_img, (0,0))
-        button_rects = [play_rect, smeltery_rect, tavern_rect]
-        button_labels = ["PLAY", "SMELTERY", "TAVERN"]
-        for i, rect in enumerate(button_rects):
-            shake_offset = 0
-            if hovered[i]:
-                shake_phases[i] += 0.25
-                shake_offset = int(math.sin(shake_phases[i]) * 6)
-            else:
-                shake_phases[i] = 0
-            shaken_rect = rect.move(shake_offset, 0)
-            if play_btn_img:
-                screen.blit(play_btn_img, shaken_rect)
-            else:
-                pg.draw.rect(screen, (255,255,0), shaken_rect, border_radius=18)
-            outline_rect = shaken_rect.inflate(-4, -4)
-            pg.draw.rect(screen, (0,0,0), outline_rect, width=7, border_radius=18)
-            grass_green = (50, 200, 50)
-            txt = font20.render(button_labels[i], True, grass_green)
-            screen.blit(txt, (shaken_rect.x + shaken_rect.w//2 - txt.get_width()//2, shaken_rect.y + shaken_rect.h//2 - txt.get_height()//2))
-        pg.display.flip()
-        clock.tick(60)
-    if not waiting:
-        return
+                    show_tavern(screen, dummy_player)
         screen.fill((0,0,0))
         if cover_img:
             screen.blit(cover_img, (0,0))
@@ -406,7 +691,7 @@ class Item:
         if self.type == "dagger":
             if Item.dagger_sprite is None:
                 try:
-                    Item.dagger_sprite = pg.image.load("dagger.png").convert_alpha()
+                    Item.dagger_sprite = pg.image.load("assets/dagger.png").convert_alpha()
                 except Exception as e:
                     print("Failed to load dagger sprite:", e)
                     Item.dagger_sprite = None
@@ -418,7 +703,7 @@ class Item:
         elif self.type == "sword":
             if Item.sword_sprite is None:
                 try:
-                    Item.sword_sprite = pg.image.load("sword.png").convert_alpha()
+                    Item.sword_sprite = pg.image.load("assets/sword.png").convert_alpha()
                 except Exception as e:
                     print("Failed to load sword sprite:", e)
                     Item.sword_sprite = None
@@ -430,7 +715,7 @@ class Item:
         elif self.type == "rapier":
             if Item.rapier_sprite is None:
                 try:
-                    Item.rapier_sprite = pg.image.load("rapier.png").convert_alpha()
+                    Item.rapier_sprite = pg.image.load("assets/rapier.png").convert_alpha()
                 except Exception as e:
                     print("Failed to load rapier sprite:", e)
                     Item.rapier_sprite = None
@@ -539,6 +824,15 @@ class Entity:
                     self.vy = 0
 
 class Player(Entity):
+    def move_armor_to_inventory(self):
+        # Move all equipped armor to first available inventory slots
+        for slot, item in self.armor.items():
+            if item:
+                for i in range(len(self.inventory)):
+                    if self.inventory[i] is None:
+                        self.inventory[i] = item
+                        self.armor[slot] = None
+                        break
     def to_dict(self):
         return {
             'xp': self.xp,
@@ -565,8 +859,9 @@ class Player(Entity):
         self.speed_mult = 1
         self.jump_mult = 1
         self.last_attack = 0
-        self.anim = AnimSprite("/home/matej/anime-game/Kunoichi/*.png", fps=10)
+        self.anim = AnimSprite("assets/*.png", fps=10)
         self.can_double_jump = True
+        self.invincible_until = 0  # timestamp in ms
     def from_dict(self, data):
         self.xp = data.get('xp', 0)
         self.coins = data.get('coins', 0)
@@ -582,7 +877,7 @@ class Player(Entity):
         self.jump_mult = 1
         self.dagger_bonus = 0
         self.calc_set_bonus()
-        self.anim = AnimSprite("/home/matej/anime-game/Kunoichi/*.png", fps=10)
+        self.anim = AnimSprite("assets/*.png", fps=10)
     def calc_set_bonus(self):
         """
         Apply set bonuses for equipped armor.
@@ -621,7 +916,8 @@ class Player(Entity):
                 if dist(self.rect.center, e.rect.center) < r + e.rect.w//2:
                     e.hp -= dmg
             return
-        if now - self.last_attack < self.weapon.ataack_speed: return
+        if now - self.last_attack < self.weapon.attack_speed:
+            return
         self.last_attack = now
         mx, my = pg.mouse.get_pos()
         ang = angle(self.rect.center, (mx, my))
@@ -663,6 +959,16 @@ class Player(Entity):
         Update player state, handle input, and apply physics.
         """
         self.vy += GRAVITY
+        keys = pg.key.get_pressed()
+        # Horizontal movement
+        self.vx = (keys[pg.K_d] - keys[pg.K_a]) * MOVE_SPEED * self.speed_mult
+        # Jumping
+        if (keys[pg.K_SPACE] or keys[pg.K_w]) and self.on_ground:
+            self.vy = JUMP_STR * self.jump_mult
+            self.on_ground = False
+        elif (keys[pg.K_SPACE] or keys[pg.K_w]) and self.can_double_jump and not self.on_ground:
+            self.vy = JUMP_STR * self.jump_mult
+            self.can_double_jump = False
         self.move(self.vx, self.vy, platforms)
         # Reset double jump if landed
         if self.on_ground:
@@ -681,22 +987,28 @@ class Player(Entity):
             if self.throwing.ttl <= 0:
                 self.throwing = None
                 self.anim.update(16)
-        # input
-        keys = pg.key.get_pressed()
-        self.vx = (keys[pg.K_d]-keys[pg.K_a]) * MOVE_SPEED * self.speed_mult
         # attack
         if pg.mouse.get_pressed()[0]:
             self.attack(enemies, now)
         # block
-        if keys[pg.K_q] and self.weapon and self.weapon.type=="sword":
+        if keys[pg.K_q] and self.weapon and self.weapon.type == "sword":
             self.block(now)
-        if keys[pg.K_q] and self.weapon and self.weapon.type=="rapier":
+        if keys[pg.K_q] and self.weapon and self.weapon.type == "rapier":
             self.throw_rapier(now)
     def draw(self, surf):
         """
-        Draw the player and health bar.
+        Draw the player and health bar. Show invincibility feedback if active.
         """
-        surf.blit(pg.transform.flip(self.anim.image(), self.facing < 0, False), self.rect)
+        img = pg.transform.flip(self.anim.image(), self.facing < 0, False)
+        if pg.time.get_ticks() < self.invincible_until:
+            # Flicker effect for invincibility
+            if (pg.time.get_ticks() // 100) % 2 == 0:
+                img.set_alpha(128)
+            else:
+                img.set_alpha(255)
+        else:
+            img.set_alpha(255)
+        surf.blit(img, self.rect)
         self.draw_bar(surf)
         if self.throwing:
             self.throwing.draw(surf)
@@ -767,9 +1079,11 @@ class Enemy(Entity):
         self.ai(player, platforms)
         self.vy += GRAVITY
         self.move(self.vx, self.vy, platforms)
-        if self.rect.colliderect(player.rect):
-            player.hp -= self.dmg
-            self.rect.x += sign(self.rect.centerx - player.rect.centerx) * 30
+        # Only damage player if enemy is alive and player is alive
+        if self.hp > 0 and player.hp > 0 and self.rect.colliderect(player.rect):
+            if pg.time.get_ticks() >= getattr(player, 'invincible_until', 0):
+                player.hp -= self.dmg
+                self.rect.x += sign(self.rect.centerx - player.rect.centerx) * 30
     def draw(self, surf):
         """
         Draw the enemy and health bar.
@@ -779,6 +1093,7 @@ class Enemy(Entity):
             surf.blit(img, self.rect)
         else:
             pg.draw.rect(surf, self.colour, self.rect)
+        # Removed red debug outline
         self.draw_bar(surf)
 
 class Boss(Enemy):
@@ -795,7 +1110,7 @@ class Boss(Enemy):
         # Load boss sprite once
         if Boss.boss_sprite is None:
             try:
-                Boss.boss_sprite = pg.image.load("rock-boss.png").convert_alpha()
+                Boss.boss_sprite = pg.image.load("assets/rock-boss.png").convert_alpha()
             except Exception as e:
                 print("Failed to load boss sprite:", e)
                 Boss.boss_sprite = None
@@ -813,7 +1128,7 @@ class Boss(Enemy):
 
 # ----------------------------- LEVELS ---------------------------------
 try:
-    Enemy.enemy_sprite = pg.image.load(os.path.join("rock-monster", "rock-monster.png")).convert_alpha()
+    Enemy.enemy_sprite = pg.image.load("assets/rock-monster.png").convert_alpha()
 except Exception as e:
     print("Failed to load enemy sprite:", e)
     Enemy.enemy_sprite = None
@@ -863,7 +1178,8 @@ class Stage:
         """
         for i in range(10):
             x = random.randint(100, WIDTH-100)
-            self.mobs.append(Enemy(x, 100, 40 + self.num*10, 5 + self.num*2, (200,200,50)))
+            y = 100
+            self.mobs.append(Enemy(x, y, 40 + self.num*10, 5 + self.num*2, (200,200,50)))
     def spawn_boss(self):
         """
         Spawn the boss enemy for the stage.
@@ -901,7 +1217,7 @@ class Stage:
             self.portal = pg.Rect(WIDTH-100, HEIGHT-100, 60, 80)
     def draw(self, surf):
         """
-        Draw platforms, drops, and portal for the stage.
+        Draw platforms, drops, portal, and enemies for the stage.
         """
         for p in self.platforms:
             pg.draw.rect(surf, (100,100,120), p)
@@ -909,212 +1225,17 @@ class Stage:
             d.draw(surf, d.x, d.y)
         if self.portal:
             pg.draw.rect(surf, (255,255,0), self.portal)
+        # Draw all enemies on top
+        for m in self.mobs:
+            m.draw(surf)
 
-# ----------------------------- INVENTORY ------------------------------
 dragging_item = None  # (item, from_slot)
 drag_offset = (0, 0)
 drag_pos = (0, 0)
 
-def draw_inventory(surf, player):
-    """
-    Draw the inventory UI, including items, armor, weapon, and shield.
-    """
-    margin, size = 20, 50
-    startx, starty = 100, 100
-    # 10 slots    
-    global dragging_item, drag_pos
-    mouse_x, mouse_y = pg.mouse.get_pos()
-    slot_rects = []
-    for i in range(10):
-        r = pg.Rect(startx + i*(size+margin), starty, size, size)
-        slot_rects.append(r)
-        pg.draw.rect(surf, (200,200,200), r, 3)
-        # Draw item if not being dragged
-        if player.inventory[i] and (not dragging_item or dragging_item[1] != i):
-            player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
-        if i == player.selected:
-            pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
-    # Draw dragged item on top
-    if dragging_item:
-        item, from_slot = dragging_item
-        item.draw(surf, mouse_x - drag_offset[0], mouse_y - drag_offset[1], size-20)
-        r = pg.Rect(startx + i*(size+margin), starty, size, size)
-        pg.draw.rect(surf, (200,200,200), r, 3)
-        if player.inventory[i]:
-            player.inventory[i].draw(surf, r.x+10, r.y+10, size-20)
-        if i == player.selected:
-            # Thicker, more visible outline for selected slot
-            pg.draw.rect(surf, (255,255,0), r.inflate(8,8), 5)
-    # --- Miniature player figure and armor/shield slots ---
-    center_x = WIDTH // 2
-    center_y = HEIGHT // 2 + 40
-    mini_size = 90
-    # Draw player figure (miniature)
-    mini_rect = pg.Rect(center_x-25, center_y-45, 50, 90)
-    try:
-        surf.blit(pg.transform.scale(player.anim.image(), (50, 90)), mini_rect)
-    except Exception:
-        pg.draw.rect(surf, (255,100,100), mini_rect)
-
-    # Armor slots (left side, vertically aligned)
-    armor_slots = ["helmet", "chest", "legs", "boots"]
-    for idx, slot in enumerate(armor_slots):
-        slot_y = center_y - 40 + idx*45
-        slot_rect = pg.Rect(center_x-80, slot_y, 40, 40)
-        pg.draw.rect(surf, (150,150,150), slot_rect, 3)
-        if player.armor[slot]:
-            player.armor[slot].draw(surf, slot_rect.x+5, slot_rect.y+5, 30)
-        # Label
-        label = font16.render(slot[0].upper(), True, (180,180,180))
-        surf.blit(label, (slot_rect.x-18, slot_rect.y+12))
-
-    # Shield slot (right side, centered vertically)
-    shield_rect = pg.Rect(center_x+40, center_y-10, 40, 40)
-    pg.draw.rect(surf, (100,100,255), shield_rect, 3)
-    if player.shield:
-        player.shield.draw(surf, shield_rect.x+5, shield_rect.y+5, 30)
-    surf.blit(font16.render("S", True, (180,180,255)), (shield_rect.x+48, shield_rect.y+12))
-    # info
-    # Move XP and 'E to close' text below the inventory grid
-    grid_bottom = starty + size + 20  # 1 row, add some margin
-    tx = startx
-    surf.blit(font20.render(f"XP: {player.xp}", True, (255,255,255)), (tx, grid_bottom))
-    surf.blit(font20.render("E to close", True, (255,255,255)), (tx, grid_bottom + 30))
-
-def inventory_input(event, player):
-    """
-    Handles inventory controls: selecting, picking up, upgrading, equipping, and scrolling items.
-    """
-    # Mouse wheel scroll to change selected slot
-    if event.type == pg.MOUSEWHEEL:
-        player.selected = (player.selected - event.y) % 10
-    if event.type == pg.KEYDOWN:
-        if pg.K_1 <= event.key <= pg.K_0:
-            idx = (event.key - pg.K_1) % 10
-            player.selected = idx
-        if event.key == pg.K_i or event.key == pg.K_SPACE:
-            # pick up
-            for d in stage.drops[:]:
-                if dist(player.rect.center, (d.x, d.y)) < 60:
-                    for i, it in enumerate(player.inventory):
-                        if it is None:
-                            player.inventory[i] = d
-                            stage.drops.remove(d)
-                            break
-        if event.key == pg.K_u:
-            # upgrade selected
-            sel = player.inventory[player.selected]
-            if sel and player.xp >= 10:
-                sel.upgrade()
-                player.xp -= 10
-        if event.key == pg.K_e:
-            # equip/unequip only if selected slot is not None
-            sel = player.inventory[player.selected]
-            if sel:
-                if sel.type in ("dagger","sword","rapier"):
-                    # Only swap if the inventory slot is not None
-                    if player.weapon is not None:
-                        player.inventory[player.selected], player.weapon = player.weapon, sel
-                    else:
-                        player.weapon = sel
-                        player.inventory[player.selected] = None
-                elif sel.type in ("helmet","chest","legs","boots"):
-                    old = player.armor[sel.type]
-                    player.armor[sel.type] = sel
-                    player.inventory[player.selected] = old
-                    player.calc_set_bonus()
-
-player = Player(100, HEIGHT-200)
-load_player_data(player)
-stage = Stage(1)
-
-show_start_screen(player)
-
-running = True
-while running:
-    for e in pg.event.get():
-        if e.type == pg.QUIT:
-            running = False
-        # Always allow toggling inventory with E
-        if e.type == pg.KEYDOWN and e.key == pg.K_e:
-            player.inv_open = not player.inv_open
-        # Handle jump and double jump on W key press (event-based)
-        if not player.inv_open and e.type == pg.KEYDOWN and e.key == pg.K_w:
-            if player.on_ground:
-                player.vy = JUMP_STR * player.jump_mult
-            elif player.can_double_jump:
-                player.vy = JUMP_STR * player.jump_mult
-                player.can_double_jump = False
-        # Inventory open: handle drag/drop and inventory input
-        if player.inv_open:
-            margin, size = 20, 50
-            startx, starty = 100, 100
-            slot_rects = [pg.Rect(startx + i*(size+margin), starty, size, size) for i in range(10)]
-            if e.type == pg.MOUSEBUTTONDOWN and e.button == 1:
-                for i, r in enumerate(slot_rects):
-                    if r.collidepoint(e.pos) and player.inventory[i]:
-                        dragging_item = (player.inventory[i], i)
-                        drag_offset = (e.pos[0] - r.x, e.pos[1] - r.y)
-                        drag_pos = e.pos
-                        player.inventory[i] = None
-                        break
-            elif e.type == pg.MOUSEBUTTONUP and e.button == 1 and dragging_item:
-                dropped = False
-                for i, r in enumerate(slot_rects):
-                    if r.collidepoint(e.pos):
-                        if not player.inventory[i]:
-                            player.inventory[i] = dragging_item[0]
-                            dropped = True
-                        else:
-                            # Swap items
-                            player.inventory[dragging_item[1]] = player.inventory[i]
-                            player.inventory[i] = dragging_item[0]
-                            dropped = True
-                        break
-                if not dropped:
-                    player.inventory[dragging_item[1]] = dragging_item[0]
-                dragging_item = None
-            elif e.type == pg.MOUSEMOTION and dragging_item:
-                drag_pos = e.pos
-            else:
-                inventory_input(e, player)
-        # Inventory closed: allow picking up items with Space
-        elif e.type == pg.KEYDOWN and e.key == pg.K_SPACE:
-            for d in stage.drops[:]:
-                if player.rect.colliderect(pg.Rect(d.x, d.y, 30, 30)):
-                    for i, it in enumerate(player.inventory):
-                        if it is None:
-                            player.inventory[i] = d
-                            stage.drops.remove(d)
-                            break
-        # Mouse wheel scroll always changes selected slot
-        if e.type == pg.MOUSEWHEEL:
-            player.selected = (player.selected - e.y) % 10
-
-    if not player.inv_open:
-        # Game updates only when inventory is closed
-        now = pg.time.get_ticks()
-        player.update(stage.platforms, stage.mobs, now)
-        for m in stage.mobs:
-            m.update(player, stage.platforms)
-        stage.update(player)
-        # next stage
-        if stage.portal and player.rect.colliderect(stage.portal):
-            if stage.num == 5:
-                print("YOU REACHED THE SURFACE – YOU WIN!")
-                running = False
-                continue
-            stage = Stage(stage.num+1)
-            player.rect.topleft = (100, HEIGHT-200)
-        # death
-        if player.hp <= 0:
-            print("GAME OVER")
-            save_player_data(player)
-            show_start_screen(player)
-            # Re-initialize game state after returning from start screen
-            player = Player(100, HEIGHT-200)
-            load_player_data(player)
-            stage = Stage(1)
-            continue
-pg.quit()
-sys.exit()
+# ----------------------------- ENTRY POINT ----------------------------
+if __name__ == "__main__":
+    # Only start the game if PLAY is clicked on the start screen
+    show_game = show_start_screen()
+    if show_game:
+        run_game()

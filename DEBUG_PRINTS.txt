@@ -1,0 +1,15 @@
+# DEBUG print statements from underground_anime_platformer.py
+
+# These lines were removed for release, but can be restored for debugging:
+
+print('[DEBUG] Entered run_game')
+print(f"[DEBUG] Enemies alive: {len(stage.mobs)}")
+print(f"[DEBUG] Inventory overlay toggled: {inv_open}")
+print(f"[DEBUG] Sold item in slot {offer_idx} for {coins} coins.")
+print(f"[DEBUG] Right click at ({{mx}},{{my}}) in tavern overlay.")
+print(f"[DEBUG] Offer bubble triggered for slot {{i}}.")
+print(f"[DEBUG] Clicked slot {{i}}, but it's empty.")
+print("[DEBUG] Right click was not on any overlay slot.")
+print('[DEBUG] Entered show_start_screen')
+print('[DEBUG] Exiting show_start_screen, clearing events')
+print(f"[DEBUG] Spawning enemy at ({{x}}, {{y}})")
