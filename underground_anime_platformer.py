@@ -17,6 +17,8 @@ import pygame as pg, math, random, sys, os
 import json
 from typing import List, Dict, Optional, Tuple
 import glob, os
+
+# ----------------------------- ANIMSPRITE CLASS -----------------------
 class AnimSprite:
     """
     Handles loading and animating a sequence of PNG images from a folder.
@@ -51,6 +53,20 @@ class AnimSprite:
         Return the current animation frame (pygame.Surface).
         """
         return self.frames[self.idx]
+
+# ----------------------------- CONFIG ---------------------------------
+WIDTH, HEIGHT = 1200, 700
+FPS = 60
+GRAVITY = 0.6
+JUMP_STR = -14
+MOVE_SPEED = 5
+# BLOCK_CD = 5000  # ms
+
+# ----------------------------- FULLSCREEN FIX --------------------------
+pg.init()
+info = pg.display.Info()
+FULLSCREEN_W, FULLSCREEN_H = info.current_w, info.current_h
+WIDTH, HEIGHT = FULLSCREEN_W, FULLSCREEN_H
 # ----------------------------- CONFIG ---------------------------------
 WIDTH, HEIGHT = 1200, 700
 FPS = 60
@@ -66,6 +82,11 @@ THROWN_RAPIER_SPEED = 12
 FIST_RANGE=90
 FIST_DAMAGE=4
 FIST_SPEED=150
+# ----------------------------- FULLSCREEN FIX --------------------------
+pg.init()
+info = pg.display.Info()
+FULLSCREEN_W, FULLSCREEN_H = info.current_w, info.current_h
+WIDTH, HEIGHT = FULLSCREEN_W, FULLSCREEN_H
 # rarity colours
 RARITY_COL = {
     "common": (200, 200, 200),
@@ -95,6 +116,7 @@ def load_player_data(player):
         player.from_dict(data)
     except Exception:
         pass
+WIDTH, HEIGHT = FULLSCREEN_W, FULLSCREEN_H
 screen = pg.display.set_mode((WIDTH, HEIGHT), pg.FULLSCREEN)
 fullscreen = True
 pg.display.set_caption("Anime Underground Platformer")
@@ -270,6 +292,7 @@ def run_game():
             screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - txt.get_height()//2))
             pg.display.flip()
             pg.time.wait(2000)
+            show_start_screen()
             return
 
 def draw_full_inventory(surf, player):
@@ -422,8 +445,7 @@ def draw_inventory(surf, player):
     num_slots = 10
     total_width = num_slots * size + (num_slots - 1) * margin
     startx = 20
-    starty = HEIGHT - size  # Start at the very bottom
-    starty += 20  # Move it even further down (off the main play area)
+    starty = HEIGHT - 83 + (40 - size)//2  # Align with new floor height, center inventory in ground
     global dragging_item, drag_pos
     mouse_x, mouse_y = pg.mouse.get_pos()
     slot_rects = []
@@ -692,9 +714,12 @@ class Item:
         """
         Return base damage for the item type.
         """
-        if self.type == "dagger": return 6
-        if self.type == "sword": return 10
-        if self.type == "rapier": return 14
+        if self.type == "dagger":
+            return 12  # Increased base dagger damage
+        if self.type == "sword":
+            return 10
+        if self.type == "rapier":
+            return 14
         return 0
     def base_as(self):
         """
@@ -988,7 +1013,8 @@ class Player(Entity):
                 a = angle(e.rect.center, self.rect.center)
                 diff = (ang - a + 180) % 360 - 180
                 if abs(diff) > BACKSTAB_DEG/2:
-                    dmg += self.dagger_bonus + 4
+                    # Backstab: deal 1/4th of enemy's current health as bonus damage
+                    dmg += int(e.hp * 0.25)
         # apply
         for e in enemies:
             if dist(self.rect.center, e.rect.center) < r + e.rect.w//2:
@@ -1297,13 +1323,14 @@ class Stage:
         """
         Generate platforms for the level. Ensure at least one is in jumping reach from the ground.
         """
-        base = [pg.Rect(0, HEIGHT-40, WIDTH, 40)]
+        ground_height = 100
+        base = [pg.Rect(0, HEIGHT - ground_height, WIDTH, ground_height)]
         min_gap = 140  # Increased gap for easier jumping between floors
         platforms = []
         attempts = 0
         max_jump = 160  # Player can jump about 160px
         # First, guarantee one reachable platform
-        must_have = pg.Rect(random.randint(100, WIDTH-200), HEIGHT-40-max_jump, random.randint(150, 300), 20)
+        must_have = pg.Rect(random.randint(100, WIDTH-200), HEIGHT - ground_height - max_jump, random.randint(150, 300), 20)
         platforms.append(must_have)
         while len(platforms) < 14 and attempts < 100:
             x = random.randint(100, WIDTH-200)
