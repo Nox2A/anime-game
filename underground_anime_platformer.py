@@ -340,7 +340,9 @@ def load_player_data(player):
             data = json.load(f)
         player.from_dict(data)
     except Exception:
-        pass
+        # No save file: ensure empty inventory and armor
+        player.inventory = [None]*10
+        player.armor = {"helmet":None,"chest":None,"legs":None,"boots":None}
 WIDTH, HEIGHT = FULLSCREEN_W, FULLSCREEN_H
 screen = pg.display.set_mode((WIDTH, HEIGHT), pg.FULLSCREEN)
 fullscreen = True
