@@ -1,3 +1,36 @@
+# --- Portal Animation Helper ---
+def load_portal_frames(filename, frame_w, frame_h):
+    """
+    Load a 3x2 spritesheet and return a list of 6 frames.
+    """
+    sheet = pg.image.load(filename).convert_alpha()
+    frames = []
+    for row in range(2):
+        for col in range(3):
+            rect = pg.Rect(col*frame_w, row*frame_h, frame_w, frame_h)
+            frame = sheet.subsurface(rect).copy()
+            frames.append(frame)
+    return frames
+
+# Example Portal class
+class Portal:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.frames = load_portal_frames("assets/portal.png", frame_w=64, frame_h=64)  # Change 64 to your frame size
+        self.frame_idx = 0
+        self.anim_timer = 0
+        self.anim_speed = 100  # ms per frame
+
+    def update(self, dt):
+        self.anim_timer += dt
+        if self.anim_timer > self.anim_speed:
+            self.anim_timer = 0
+            self.frame_idx = (self.frame_idx + 1) % len(self.frames)
+
+    def draw(self, surf):
+        frame = self.frames[self.frame_idx]
+        surf.blit(frame, (self.x, self.y))
 def show_smeltery(screen, player):
     # Load smeltery and anvil images
     try:
@@ -258,11 +291,7 @@ JUMP_STR = -14
 MOVE_SPEED = 5
 # BLOCK_CD = 5000  # ms
 
-# ----------------------------- FULLSCREEN FIX --------------------------
-pg.init()
-info = pg.display.Info()
-FULLSCREEN_W, FULLSCREEN_H = info.current_w, info.current_h
-WIDTH, HEIGHT = FULLSCREEN_W, FULLSCREEN_H
+
 # ----------------------------- CONFIG ---------------------------------
 WIDTH, HEIGHT = 1200, 700
 FPS = 60
@@ -1143,6 +1172,7 @@ class Player(Entity):
             'xp': self.xp,
             'coins': self.coins,
             'inventory': [item.to_dict() if item else None for item in self.inventory],
+            'armor': {slot: (item.to_dict() if item else None) for slot, item in self.armor.items()},
         }
     """
     The player character, inherits from Entity.
@@ -1172,6 +1202,10 @@ class Player(Entity):
         self.coins = data.get('coins', 0)
         inv = data.get('inventory', [None]*10)
         self.inventory = [Item.from_dict(it) if it else None for it in inv]
+        armor_data = data.get('armor', {})
+        for slot in self.armor:
+            it = armor_data.get(slot)
+            self.armor[slot] = Item.from_dict(it) if it else None
         self.last_attack = 0
         self.block_cd = 0
         self.throwing = None  # rapier projectile
@@ -1543,7 +1577,7 @@ class Stage:
         self.platforms = self.make_platforms()
         self.mobs: List[Enemy] = []
         self.drops: List[Item] = []
-        self.portal = None
+        self.portal = None  # Will be a Portal object
         self.boss_dead = False
         self.spawn_initial_mobs()
     def make_platforms(self):
@@ -1558,34 +1592,59 @@ class Stage:
         min_dx = 80     # Min horizontal distance for variety
         min_dy = 80     # Min vertical gap for variety
         max_dy = max_jump
+        min_dist = 60   # Minimum distance between any two platforms (horizontal or vertical)
         platforms = []
-        # Start from ground, build upwards
         prev_rect = base[0]
         y = HEIGHT - ground_height - random.randint(min_dy, max_dy)
         for i in range(min_platforms):
-            # Random width
-            w = random.randint(150, 300)
-            # Random horizontal offset from previous
-            dx = random.randint(min_dx, max_dx)
-            # Randomly left or right
-            if prev_rect.x < WIDTH // 2:
-                x = min(prev_rect.x + dx, WIDTH - w - 20)
-            else:
-                x = max(prev_rect.x - dx, 20)
-            # Clamp y
-            y = max(y, 60)
-            rect = pg.Rect(x, y, w, 20)
+            tries = 0
+            while True:
+                w = random.randint(150, 300)
+                dx = random.randint(min_dx, max_dx)
+                if prev_rect.x < WIDTH // 2:
+                    x = min(prev_rect.x + dx, WIDTH - w - 20)
+                else:
+                    x = max(prev_rect.x - dx, 20)
+                y = max(y, 60)
+                rect = pg.Rect(x, y, w, 20)
+                # Check for overlap/too close to any previous platform
+                too_close = False
+                for p in platforms:
+                    if abs(rect.y - p.y) < min_dy//2 and (rect.right > p.x and rect.x < p.right):
+                        too_close = True
+                        break
+                    if abs(rect.x - p.x) < min_dist and abs(rect.y - p.y) < min_dist:
+                        too_close = True
+                        break
+                if not too_close or tries > 10:
+                    break
+                tries += 1
+                y -= 10  # try a bit higher if stuck
             platforms.append(rect)
             prev_rect = rect
-            # Next y (higher up)
             y -= random.randint(min_dy, max_dy)
-        # Optionally add a few more random platforms for density
+        # Optionally add a few more random platforms for density, but enforce spacing
         extra = random.randint(0, 3)
         for _ in range(extra):
-            px = random.randint(40, WIDTH-340)
-            py = random.randint(60, HEIGHT-200)
-            pw = random.randint(120, 260)
-            platforms.append(pg.Rect(px, py, pw, 20))
+            tries = 0
+            while True:
+                px = random.randint(40, WIDTH-340)
+                py = random.randint(60, HEIGHT-200)
+                pw = random.randint(120, 260)
+                rect = pg.Rect(px, py, pw, 20)
+                too_close = False
+                for p in platforms:
+                    if abs(rect.y - p.y) < min_dy//2 and (rect.right > p.x and rect.x < p.right):
+                        too_close = True
+                        break
+                    if abs(rect.x - p.x) < min_dist and abs(rect.y - p.y) < min_dist:
+                        too_close = True
+                        break
+                if not too_close or tries > 10:
+                    break
+                tries += 1
+        
+            platforms.append(rect)
         # Always include ground
         all_platforms = base + platforms
         all_platforms.sort(key=lambda r: r.y)
@@ -1632,7 +1691,7 @@ class Stage:
             self.spawn_boss()
         # portal
         if self.boss_dead and not self.portal:
-            self.portal = pg.Rect(WIDTH-100, HEIGHT-100, 60, 80)
+            self.portal = Portal(WIDTH-100, HEIGHT-100)
     def draw(self, surf):
         """
         Draw platforms, drops, portal, and enemies for the stage.
@@ -1660,7 +1719,9 @@ class Stage:
         for d in self.drops:
             d.draw(surf, d.x, d.y)
         if self.portal:
-            pg.draw.rect(surf, (255,255,0), self.portal)
+            self.portal.draw(surf)
+        if self.portal:
+            self.portal.update(1000//FPS)  # Update animation (dt in ms)
         # Draw all enemies on top
         for m in self.mobs:
             m.draw(surf)
