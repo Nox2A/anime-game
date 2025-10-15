@@ -1,3 +1,199 @@
+def show_smeltery(screen, player):
+    # Load smeltery and anvil images
+    try:
+        smeltery_bg = pg.image.load("assets/smeltery.png").convert()
+        smeltery_bg = pg.transform.scale(smeltery_bg, (WIDTH, HEIGHT))
+    except Exception as e:
+        print("Failed to load smeltery.png:", e)
+        smeltery_bg = None
+    try:
+        anvil_img = pg.image.load("assets/anvil.png").convert_alpha()
+    except Exception as e:
+        print("Failed to load anvil.png:", e)
+        anvil_img = None
+    smeltery_waiting = True
+    stage = 0  # 0: intro, 1: anvil UI
+    input_slots = [None, None]  # Holds (item, idx) tuples
+    output_item = None
+    output_ready = False
+    margin, size = 20, 50
+    startx, starty = 100, 100
+    dragging = None  # (item, idx, from_inv:bool)
+    smelt_msg = ""
+    smelt_msg_timer = 0
+    while smeltery_waiting:
+        for event in pg.event.get():
+            if event.type == pg.QUIT:
+                pg.quit()
+                sys.exit()
+            if event.type == pg.KEYDOWN:
+                if event.key == pg.K_ESCAPE:
+                    if stage == 1:
+                        # Return all items from input slots to inventory
+                        for i in range(2):
+                            if input_slots[i]:
+                                item, idx = input_slots[i]
+                                for j in range(len(player.inventory)):
+                                    if player.inventory[j] is None:
+                                        player.inventory[j] = item
+                                        break
+                                input_slots[i] = None
+                        # Reset output
+                        output_item = None
+                        output_ready = False
+                        stage = 0
+                    else:
+                        smeltery_waiting = False
+                        show_start_screen()
+                        return
+                if stage == 0 and event.key == pg.K_RETURN:
+                    stage = 1
+            if stage == 1:
+                mx, my = pg.mouse.get_pos()
+                # Start dragging from inventory or input slots
+                if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                    # Inventory
+                    for i in range(10):
+                        r = pg.Rect(40 + i*(size+margin), HEIGHT-80, size, size)
+                        if r.collidepoint(mx, my) and player.inventory[i]:
+                            dragging = (player.inventory[i], i, True)
+                            break
+                    # Input slots
+                    for i in range(2):
+                        slot_rect = pg.Rect(WIDTH//2 - 60 + i*80, HEIGHT//2 - 30, 60, 60)
+                        if slot_rect.collidepoint(mx, my) and input_slots[i]:
+                            dragging = (input_slots[i][0], i, False)
+                            break
+                    # Output slot
+                    output_rect = pg.Rect(WIDTH//2 - 60, HEIGHT - 120, 120, 80)
+                    if output_ready and output_rect.collidepoint(mx, my) and output_item:
+                        for j in range(len(player.inventory)):
+                            if player.inventory[j] is None:
+                                player.inventory[j] = output_item
+                                output_item = None
+                                output_ready = False
+                                input_slots = [None, None]
+                                break
+                # Drop onto input slots or inventory
+                if event.type == pg.MOUSEBUTTONUP and event.button == 1 and dragging:
+                    item, idx, from_inv = dragging
+                    dropped = False
+                    # Input slots
+                    for i in range(2):
+                        slot_rect = pg.Rect(WIDTH//2 - 60 + i*80, HEIGHT//2 - 30, 60, 60)
+                        if slot_rect.collidepoint(mx, my):
+                            # Only allow if slot empty and (other slot empty or matches type/rarity)
+                            other = input_slots[1-i][0] if input_slots[1-i] else None
+                            if input_slots[i] is None:
+                                if other is None or (other.type == item.type and other.rarity == item.rarity):
+                                    input_slots[i] = (item, None)
+                                    if from_inv:
+                                        player.inventory[idx] = None
+                                    else:
+                                        input_slots[idx] = None
+                                    dropped = True
+                                    break
+                    # Inventory bar
+                    for i in range(10):
+                        r = pg.Rect(40 + i*(size+margin), HEIGHT-80, size, size)
+                        if r.collidepoint(mx, my) and player.inventory[i] is None:
+                            player.inventory[i] = item
+                            if from_inv:
+                                player.inventory[idx] = None
+                            else:
+                                input_slots[idx] = None
+                            dropped = True
+                            break
+                    dragging = None
+        screen.fill((40, 30, 30))
+        if smeltery_bg:
+            screen.blit(smeltery_bg, (0, 0))
+        # Speech bubble (stage 0)
+        if stage == 0:
+            bubble_w, bubble_h = 340, 74
+            bubble_x = WIDTH//2 - bubble_w//2
+            bubble_y = HEIGHT//2 - 180
+            bubble = pg.Rect(bubble_x, bubble_y, bubble_w, bubble_h)
+            pg.draw.rect(screen, (255,255,180), bubble, border_radius=12)
+            pg.draw.rect(screen, (0,0,0), bubble, width=3, border_radius=12)
+            pointer = [(WIDTH//2-10, bubble.bottom), (WIDTH//2+10, bubble.bottom), (WIDTH//2, bubble.bottom+16)]
+            pg.draw.polygon(screen, (255,255,180), pointer)
+            pg.draw.polygon(screen, (0,0,0), pointer, width=2)
+            txt = font16.render("Anything you want to smelt?", True, (0,0,0))
+            screen.blit(txt, (bubble.x+24, bubble.y+24))
+        # Anvil UI (stage 1)
+        if stage == 1:
+            overlay = pg.Surface((WIDTH, HEIGHT), flags=pg.SRCALPHA)
+            overlay.fill((0, 0, 0, 160))
+            screen.blit(overlay, (0, 0))
+            if anvil_img:
+                screen.blit(anvil_img, (WIDTH//2 - anvil_img.get_width()//2, HEIGHT//2 - anvil_img.get_height()//2))
+            # Draw input slots
+            for i in range(2):
+                slot_rect = pg.Rect(WIDTH//2 - 60 + i*80, HEIGHT//2 - 30, 60, 60)
+                pg.draw.rect(screen, (220,220,220), slot_rect, 4)
+                if input_slots[i]:
+                    item, idx = input_slots[i]
+                    item.draw(screen, slot_rect.x+10, slot_rect.y+10, 40)
+            # Draw output slot
+            output_rect = pg.Rect(WIDTH//2 - 60, HEIGHT - 120, 120, 80)
+            pg.draw.rect(screen, (200,200,255), output_rect, border_radius=10, width=4)
+            if output_ready and output_item:
+                output_item.draw(screen, output_rect.x+30, output_rect.y+20, 60)
+            # Smelt logic: only if both slots filled, not output_ready, and both items match
+            if not output_ready and input_slots[0] and input_slots[1]:
+                item0, idx0 = input_slots[0]
+                item1, idx1 = input_slots[1]
+                if item0.type == item1.type and item0.rarity == item1.rarity:
+                    rarity_order = ["common","uncommon","rare","holy","godlike"]
+                    r_idx = rarity_order.index(item0.rarity)
+                    # Smelting cost by rarity
+                    cost_table = [ (5,10), (5,10), (10,20), (15,40), (30,100) ]
+                    exp_cost, coin_cost = cost_table[r_idx]
+                    # Check player coins and exp
+                    if hasattr(player, "exp") and hasattr(player, "coins"):
+                        if player.exp < exp_cost or player.coins < coin_cost:
+                            smelt_msg = f"Need {exp_cost} XP, {coin_cost} coins!"
+                            smelt_msg_timer = pg.time.get_ticks()
+                        else:
+                            player.exp -= exp_cost
+                            player.coins -= coin_cost
+                            if r_idx < len(rarity_order)-1:
+                                chances = [0.5, 0.3, 0.15, 0.05]
+                                upgrade = random.random() < chances[r_idx]
+                                new_rarity = rarity_order[r_idx+1] if upgrade else item0.rarity
+                                output_item = Item(item0.name, item0.type, new_rarity)
+                                output_ready = True
+                            else:
+                                output_item = Item(item0.name, item0.type, item0.rarity)
+                                output_ready = True
+                    else:
+                        smelt_msg = "No exp/coin attributes!"
+                        smelt_msg_timer = pg.time.get_ticks()
+            # If not matching, do not allow smelt (no output)
+            elif not output_ready:
+                output_item = None
+                output_ready = False
+    # Draw inventory bar at bottom
+        for i in range(10):
+            r = pg.Rect(40 + i*(size+margin), HEIGHT-80, size, size)
+            pg.draw.rect(screen, (230,230,230), r)
+            pg.draw.rect(screen, (200,200,200), r, 3)
+            if player.inventory[i]:
+                player.inventory[i].draw(screen, r.x+10, r.y+10, size-20)
+            if i == player.selected:
+                pg.draw.rect(screen, (255,255,0), r.inflate(8,8), 5)
+        # Show smelt cost message if needed
+        if smelt_msg and pg.time.get_ticks() - smelt_msg_timer < 1800:
+            msgsurf = font16.render(smelt_msg, True, (255,40,40))
+            screen.blit(msgsurf, (WIDTH//2 - msgsurf.get_width()//2, HEIGHT//2 + 120))
+        # Draw dragging item
+        if stage == 1 and dragging:
+            item, idx, from_inv = dragging
+            mx, my = pg.mouse.get_pos()
+            item.draw(screen, mx-20, my-20, 40)
+        pg.display.flip()
+        clock.tick(60)
 # Utility: draw a button with a background image and black outline covering corners
 # Utility: draw a button with a background image and black outline covering corners
 def draw_button_with_bg(surf, rect, bg_img, border_radius=18):
@@ -121,8 +317,15 @@ screen = pg.display.set_mode((WIDTH, HEIGHT), pg.FULLSCREEN)
 fullscreen = True
 pg.display.set_caption("Anime Underground Platformer")
 clock = pg.time.Clock()
-font20 = pg.font.SysFont("arial", 20)
-font16 = pg.font.SysFont("arial", 16)
+font20 = pg.font.SysFont(["Comic Sans MS", "Brush Script MT", "cursive", "arial"], 20, italic=True)
+font16 = pg.font.SysFont(["Comic Sans MS", "Brush Script MT", "cursive", "arial"], 16, italic=True)
+
+# Load floor/ledge sprite
+floor_img = None
+try:
+    floor_img = pg.image.load("assets/floor.png").convert_alpha()
+except Exception as e:
+    print("[DEBUG] Failed to load floor.png:", e)
 
 # Load background image (after display is initialized)
 game_bg_img = None
@@ -498,9 +701,13 @@ def show_tavern(screen, player):
                 sys.exit()
             if event.type == pg.KEYDOWN:
                 if event.key == pg.K_ESCAPE:
-                    tavern_waiting = False
-                    show_start_screen()
-                    return
+                    if offer_idx is not None:
+                        offer_idx = None  # Cancel offer bubble
+                        offer_msg = None
+                    else:
+                        tavern_waiting = False
+                        show_start_screen()
+                        return
                 if event.key == pg.K_e:
                     inv_open = not inv_open
                 if inv_open and offer_idx is not None and event.key == pg.K_RETURN:
@@ -560,7 +767,8 @@ def show_tavern(screen, player):
             for i in range(10):
                 r = pg.Rect(startx + i*(size+margin), starty, size, size)
                 pg.draw.rect(screen, (220,220,220), r, 4)
-                if player.inventory[i] and (offer_idx is None or offer_idx != i):
+                # Always show the item sprite, even if offer_idx == i
+                if player.inventory[i]:
                     player.inventory[i].draw(screen, r.x+10, r.y+10, size-20)
                 if i == player.selected:
                     pg.draw.rect(screen, (255,255,0), r.inflate(8,8), 5)
@@ -578,18 +786,22 @@ def show_tavern(screen, player):
                     pg.draw.rect(screen, (255,255,0), r.inflate(8,8), 5)
             if offer_idx is not None:
                 r = pg.Rect(startx + offer_idx*(size+margin), starty, size, size)
-                bubble = pg.Rect(r.x-10, r.y-60, size+20, 44)
+                # Make the bubble even wider and taller, and center it above the slot
+                bubble_w, bubble_h = size+180, 74
+                bubble_x = r.centerx - bubble_w//2
+                bubble_y = r.y - bubble_h - 12
+                bubble = pg.Rect(bubble_x, bubble_y, bubble_w, bubble_h)
                 # Draw a more visible bubble with a pointer
                 pg.draw.rect(screen, (255,255,180), bubble, border_radius=12)
                 pg.draw.rect(screen, (0,0,0), bubble, width=3, border_radius=12)
-                # Draw a triangle pointer
-                pointer = [(bubble.centerx-10, bubble.bottom), (bubble.centerx+10, bubble.bottom), (bubble.centerx, bubble.bottom+16)]
+                # Draw a triangle pointer centered to the slot
+                pointer = [(r.centerx-10, bubble.bottom), (r.centerx+10, bubble.bottom), (r.centerx, bubble.bottom+16)]
                 pg.draw.polygon(screen, (255,255,180), pointer)
                 pg.draw.polygon(screen, (0,0,0), pointer, width=2)
-                txt = font16.render("Do you want to sell?", True, (0,0,0))
-                screen.blit(txt, (bubble.x+12, bubble.y+10))
+                txt = font16.render("Do you want to sell this item?", True, (0,0,0))
+                screen.blit(txt, (bubble.x+24, bubble.y+16))
                 txt2 = font16.render("Press Enter to confirm", True, (80,80,80))
-                screen.blit(txt2, (bubble.x+12, bubble.y+24))
+                screen.blit(txt2, (bubble.x+24, bubble.y+40))
             if offer_msg:
                 msg_rect = pg.Rect(WIDTH//2-80, HEIGHT//2-100, 160, 32)
                 pg.draw.rect(screen, (255,255,200), msg_rect, border_radius=10)
@@ -640,6 +852,8 @@ def show_start_screen():
             if event.type == pg.MOUSEBUTTONDOWN:
                 if hovered[0]:
                     return True
+                if hovered[1]:
+                    show_smeltery(screen, dummy_player)
                 if hovered[2]:
                     show_tavern(screen, dummy_player)
         screen.fill((0,0,0))
@@ -789,29 +1003,42 @@ class Item:
             else:
                 pg.draw.rect(surf, c, (x, y, size, size//3))
         else:  # armour piece
-            # Ninja armor sprites
-            ninja_sprites = {
-                "helmet": "assets/ninja-helmet.png",
-                "chest": "assets/ninja-chestplate.png",
-                "legs": "assets/ninja-legs.png",
-                "boots": "assets/ninja-boots.png"
+            # Armor sprites by set and slot
+            armor_sprites = {
+                "ninja": {
+                    "helmet": "assets/ninja-helmet.png",
+                    "chest": "assets/ninja-chestplate.png",
+                    "legs": "assets/ninja-legs.png",
+                    "boots": "assets/ninja-boots.png"
+                },
+                "knight": {
+                    "helmet": "assets/knight-helmet.png",
+                    "chest": "assets/knight-chestplate.png",
+                    "legs": "assets/knight-leggings.png",
+                    "boots": "assets/knight-boots.png"
+                },
+                "mage": {
+                    "helmet": "assets/mage-helmet.png",
+                    "chest": "assets/mage-chestplate.png",
+                    "legs": "assets/mage-leggings.png",
+                    "boots": "assets/mage-boots.png"
+                }
             }
-            prefix = self.name.split()[0] if self.name else ""
+            prefix = self.name.split()[0].lower() if self.name else ""
             slot = self.type
-            sprite_attr = f"ninja_{slot}_sprite"
-            if prefix == "ninja" and slot in ninja_sprites:
+            sprite = None
+            if prefix in armor_sprites and slot in armor_sprites[prefix]:
+                sprite_attr = f"{prefix}_{slot}_sprite"
                 if not hasattr(Item, sprite_attr):
                     try:
-                        setattr(Item, sprite_attr, pg.image.load(ninja_sprites[slot]).convert_alpha())
+                        setattr(Item, sprite_attr, pg.image.load(armor_sprites[prefix][slot]).convert_alpha())
                     except Exception as e:
-                        print(f"Failed to load {ninja_sprites[slot]}: {e}")
+                        print(f"Failed to load {armor_sprites[prefix][slot]}: {e}")
                         setattr(Item, sprite_attr, None)
                 sprite = getattr(Item, sprite_attr, None)
-                if sprite:
-                    img = pg.transform.scale(sprite, (size, size))
-                    surf.blit(img, (x, y))
-                else:
-                    pg.draw.circle(surf, c, (x+size//2, y+size//2), size//2)
+            if sprite:
+                img = pg.transform.scale(sprite, (size, size))
+                surf.blit(img, (x, y))
             else:
                 pg.draw.circle(surf, c, (x+size//2, y+size//2), size//2)
         # Draw a thick, vivid 'L' rarity indicator: diagonal (middle left to bottom left), then horizontal (bottom left to middle bottom)
@@ -1321,33 +1548,48 @@ class Stage:
         self.spawn_initial_mobs()
     def make_platforms(self):
         """
-        Generate platforms for the level. Ensure at least one is in jumping reach from the ground.
+        Generate at least 6 platforms (excluding ground), each within max jump height and distance from the previous, with some randomization.
         """
         ground_height = 100
         base = [pg.Rect(0, HEIGHT - ground_height, WIDTH, ground_height)]
-        min_gap = 140  # Increased gap for easier jumping between floors
-        platforms = []
-        attempts = 0
+        min_platforms = 6
         max_jump = 160  # Player can jump about 160px
-        # First, guarantee one reachable platform
-        must_have = pg.Rect(random.randint(100, WIDTH-200), HEIGHT - ground_height - max_jump, random.randint(150, 300), 20)
-        platforms.append(must_have)
-        while len(platforms) < 14 and attempts < 100:
-            x = random.randint(100, WIDTH-200)
-            y = random.randint(200, HEIGHT-100)
+        max_dx = 260    # Max horizontal jump distance (tunable)
+        min_dx = 80     # Min horizontal distance for variety
+        min_dy = 80     # Min vertical gap for variety
+        max_dy = max_jump
+        platforms = []
+        # Start from ground, build upwards
+        prev_rect = base[0]
+        y = HEIGHT - ground_height - random.randint(min_dy, max_dy)
+        for i in range(min_platforms):
+            # Random width
             w = random.randint(150, 300)
-            new_rect = pg.Rect(x, y, w, 20)
-            # Ensure vertical gap from all other platforms
-            too_close = False
-            for p in base + platforms:
-                if abs(new_rect.y - p.y) < min_gap:
-                    too_close = True
-                    break
-            if not too_close:
-                platforms.append(new_rect)
-            attempts += 1
-        base.extend(platforms)
-        return base
+            # Random horizontal offset from previous
+            dx = random.randint(min_dx, max_dx)
+            # Randomly left or right
+            if prev_rect.x < WIDTH // 2:
+                x = min(prev_rect.x + dx, WIDTH - w - 20)
+            else:
+                x = max(prev_rect.x - dx, 20)
+            # Clamp y
+            y = max(y, 60)
+            rect = pg.Rect(x, y, w, 20)
+            platforms.append(rect)
+            prev_rect = rect
+            # Next y (higher up)
+            y -= random.randint(min_dy, max_dy)
+        # Optionally add a few more random platforms for density
+        extra = random.randint(0, 3)
+        for _ in range(extra):
+            px = random.randint(40, WIDTH-340)
+            py = random.randint(60, HEIGHT-200)
+            pw = random.randint(120, 260)
+            platforms.append(pg.Rect(px, py, pw, 20))
+        # Always include ground
+        all_platforms = base + platforms
+        all_platforms.sort(key=lambda r: r.y)
+        return all_platforms
     def spawn_initial_mobs(self):
         """
         Spawn the initial set of enemies for the stage.
@@ -1395,8 +1637,26 @@ class Stage:
         """
         Draw platforms, drops, portal, and enemies for the stage.
         """
-        for p in self.platforms:
-            pg.draw.rect(surf, (100,100,120), p)
+        for i, p in enumerate(self.platforms):
+            if floor_img:
+                if i == 0:
+                    # Ground: tile the image, only draw full tiles (no stretching, no cropping)
+                    tile_w, tile_h = floor_img.get_width(), floor_img.get_height()
+                    x_start = p.x
+                    y_start = p.y
+                    x_end = p.x + p.w
+                    y_end = p.y + p.h
+                    for x in range(x_start, x_end, tile_w):
+                        for y in range(y_start, y_end, tile_h):
+                            if x + tile_w <= x_end and y + tile_h <= y_end:
+                                surf.blit(floor_img, (x, y))
+                    # Optionally, fill the right/bottom edge with color if you want no gaps
+                else:
+                    # Platforms: stretch the image
+                    stretched = pg.transform.scale(floor_img, (p.w, p.h))
+                    surf.blit(stretched, (p.x, p.y))
+            else:
+                pg.draw.rect(surf, (100,100,120), p)
         for d in self.drops:
             d.draw(surf, d.x, d.y)
         if self.portal:
