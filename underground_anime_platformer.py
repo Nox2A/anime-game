@@ -82,7 +82,7 @@ def show_smeltery(screen, player):
                 if stage == 0 and event.key == pg.K_RETURN:
                     stage = 1
             if stage == 1:
-                mx, my = pg.mouse.get_pos()
+                mx, my = get_mouse_pos()
                 # Start dragging from inventory or input slots
                 if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
                     # Inventory
@@ -223,9 +223,9 @@ def show_smeltery(screen, player):
         # Draw dragging item
         if stage == 1 and dragging:
             item, idx, from_inv = dragging
-            mx, my = pg.mouse.get_pos()
+            mx, my = get_mouse_pos()
             item.draw(screen, mx-20, my-20, 40)
-        pg.display.flip()
+        present()
         clock.tick(60)
 # Utility: draw a button with a background image and black outline covering corners
 # Utility: draw a button with a background image and black outline covering corners
@@ -284,16 +284,8 @@ class AnimSprite:
         return self.frames[self.idx]
 
 # ----------------------------- CONFIG ---------------------------------
-WIDTH, HEIGHT = 1200, 700
-FPS = 60
-GRAVITY = 0.6
-JUMP_STR = -14
-MOVE_SPEED = 5
-# BLOCK_CD = 5000  # ms
-
-
-# ----------------------------- CONFIG ---------------------------------
-WIDTH, HEIGHT = 1200, 700
+# Logical (design) resolution used by the game code
+DESIGN_W, DESIGN_H = 1200, 700
 FPS = 60
 GRAVITY = 0.6
 JUMP_STR = -14
@@ -307,11 +299,109 @@ THROWN_RAPIER_SPEED = 12
 FIST_RANGE=90
 FIST_DAMAGE=4
 FIST_SPEED=150
-# ----------------------------- FULLSCREEN FIX --------------------------
+# ----------------------------- DISPLAY / SCALING -----------------------
+# Initialize pygame and pick an appropriate window size that fits the monitor
 pg.init()
 info = pg.display.Info()
-FULLSCREEN_W, FULLSCREEN_H = info.current_w, info.current_h
-WIDTH, HEIGHT = FULLSCREEN_W, FULLSCREEN_H
+MON_W, MON_H = info.current_w, info.current_h
+# Compute scale to fit the design resolution into the monitor while preserving aspect
+scale = min(MON_W / DESIGN_W, MON_H / DESIGN_H, 1.0)
+window_w, window_h = int(DESIGN_W * scale), int(DESIGN_H * scale)
+# Create actual window (resizable) and a logical game surface at DESIGN resolution
+# Use NOFRAME to create a borderless window by default for a cleaner fullscreen-like look
+BORDERLESS = True
+window_flags = pg.RESIZABLE | (pg.NOFRAME if BORDERLESS else 0)
+window = pg.display.set_mode((window_w, window_h), window_flags)
+screen = pg.Surface((DESIGN_W, DESIGN_H))  # logical surface used by the game code
+WIDTH, HEIGHT = DESIGN_W, DESIGN_H
+fullscreen = False
+# Debug toggles: set to True to print scale/window info when resizing or presenting
+DEBUG_SCALE = False
+# When True, prefer integer (pixel-perfect) upscales and nearest-neighbour scaling
+# This preserves sharp pixel-art when window is larger than the design resolution.
+PIXEL_PERFECT = True
+# Compute offsets used when centering the scaled game surface in the window
+def compute_scale_and_offset():
+    global scale, window_w, window_h, offset_x, offset_y
+    win_w, win_h = window.get_size()
+    scale = min(win_w / DESIGN_W, win_h / DESIGN_H)
+    window_w, window_h = int(DESIGN_W * scale), int(DESIGN_H * scale)
+    # center the scaled surface in the window
+    offset_x = (win_w - window_w) // 2
+    offset_y = (win_h - window_h) // 2
+
+# initial offsets
+offset_x, offset_y = (window.get_width() - window_w) // 2, (window.get_height() - window_h) // 2
+
+# Present the logical `screen` to the actual `window` with correct scaling/letterbox
+def present():
+    # compute current window size and dynamic scale/offset so we never use stale values
+    global _last_win_size
+    win_w, win_h = window.get_size()
+    # Choose scaling strategy
+    if PIXEL_PERFECT and win_w >= DESIGN_W and win_h >= DESIGN_H:
+        # prefer integer scale factor (nearest neighbour) when upscaling
+        int_scale = min(win_w // DESIGN_W, win_h // DESIGN_H)
+        if int_scale < 1:
+            int_scale = 1
+        scaled_w, scaled_h = DESIGN_W * int_scale, DESIGN_H * int_scale
+        off_x = (win_w - scaled_w) // 2
+        off_y = (win_h - scaled_h) // 2
+        # nearest-neighbour scaling keeps pixels sharp
+        scaled = pg.transform.scale(screen, (scaled_w, scaled_h))
+        cur_scale = int_scale
+        method = 'nearest_integer'
+    else:
+        # fractional scaling (downscaling or non-pixel-perfect): use smoothscale for better quality
+        cur_scale = min(win_w / DESIGN_W, win_h / DESIGN_H)
+        scaled_w, scaled_h = int(DESIGN_W * cur_scale), int(DESIGN_H * cur_scale)
+        off_x = (win_w - scaled_w) // 2
+        off_y = (win_h - scaled_h) // 2
+        # use smoothscale when reducing or doing fractional upscale to reduce aliasing
+        try:
+            scaled = pg.transform.smoothscale(screen, (scaled_w, scaled_h))
+            method = 'smooth'
+        except Exception:
+            # fallback to basic scale if smoothscale isn't available
+            scaled = pg.transform.scale(screen, (scaled_w, scaled_h))
+            method = 'nearest_fractional'
+    window.fill((0,0,0))
+    window.blit(scaled, (off_x, off_y))
+    pg.display.flip()
+    # Optional debug logging when window size or scale changes
+    try:
+        if DEBUG_SCALE:
+            if '_last_win_size' not in globals() or _last_win_size != (win_w, win_h):
+                print(f"[DEBUG_SCALE] window_size={(win_w,win_h)} method={method} cur_scale={cur_scale:.4f} scaled={(scaled_w,scaled_h)} offset={(off_x,off_y)}")
+            _last_win_size = (win_w, win_h)
+    except Exception:
+        pass
+
+# Return mouse position mapped from window coords to logical game coords
+def get_mouse_pos():
+    # Map current window mouse coords into logical DESIGN coords dynamically
+    rx, ry = pg.mouse.get_pos()
+    win_w, win_h = window.get_size()
+    cur_scale = min(win_w / DESIGN_W, win_h / DESIGN_H)
+    off_x = (win_w - int(DESIGN_W * cur_scale)) // 2
+    off_y = (win_h - int(DESIGN_H * cur_scale)) // 2
+    gx = (rx - off_x) / cur_scale
+    gy = (ry - off_y) / cur_scale
+    return int(gx), int(gy)
+
+# Map a window (display) coordinate tuple to logical game coords
+def map_window_to_logical(pos):
+    if pos is None:
+        return None
+    rx, ry = pos
+    win_w, win_h = window.get_size()
+    cur_scale = min(win_w / DESIGN_W, win_h / DESIGN_H)
+    off_x = (win_w - int(DESIGN_W * cur_scale)) // 2
+    off_y = (win_h - int(DESIGN_H * cur_scale)) // 2
+    gx = (rx - off_x) / cur_scale
+    gy = (ry - off_y) / cur_scale
+    return int(gx), int(gy)
+
 # rarity colours
 RARITY_COL = {
     "common": (200, 200, 200),
@@ -343,10 +433,10 @@ def load_player_data(player):
         # No save file: ensure empty inventory and armor
         player.inventory = [None]*10
         player.armor = {"helmet":None,"chest":None,"legs":None,"boots":None}
-WIDTH, HEIGHT = FULLSCREEN_W, FULLSCREEN_H
-screen = pg.display.set_mode((WIDTH, HEIGHT), pg.FULLSCREEN)
-fullscreen = True
 pg.display.set_caption("Anime Underground Platformer")
+fullscreen = False
+pg.display.set_caption("Anime Underground Platformer")
+# `window` is the real display surface; `screen` is the logical game surface at DESIGN_W/H
 clock = pg.time.Clock()
 font20 = pg.font.SysFont(["Comic Sans MS", "Brush Script MT", "cursive", "arial"], 20, italic=True)
 font16 = pg.font.SysFont(["Comic Sans MS", "Brush Script MT", "cursive", "arial"], 16, italic=True)
@@ -391,6 +481,11 @@ def run_game():
             if event.type == pg.QUIT:
                 save_player_data(player)
                 running = False
+            # Handle window resize events so scaling stays correct
+            if event.type == pg.VIDEORESIZE or event.type == getattr(pg, 'WINDOWRESIZED', None):
+                # Recompute scale/offset when window is resized
+                compute_scale_and_offset()
+                continue
             if event.type == pg.KEYDOWN:
                 # Robust F11 fullscreen toggle
                 if event.key == pg.K_ESCAPE:
@@ -400,18 +495,34 @@ def run_game():
                     show_inventory = not show_inventory
                 # F11 toggle: support both symbolic and numeric keycode, and try toggle_fullscreen
                 if event.key == pg.K_F11 or event.key == 1073741892:
+                    # Toggle fullscreen by replacing the `window` display mode and recomputing scale
                     fullscreen = not fullscreen
+                    if fullscreen:
+                        # Try desktop/fullscreen (borderless) with SDL scaling which is more consistent
+                        try:
+                            window = pg.display.set_mode((0, 0), pg.FULLSCREEN | pg.SCALED)
+                        except Exception:
+                            # Fallback to explicit monitor resolution fullscreen
+                            window = pg.display.set_mode((MON_W, MON_H), pg.FULLSCREEN)
+                    else:
+                        # Restore a borderless resizable window if requested
+                        flags = pg.RESIZABLE | (pg.NOFRAME if BORDERLESS else 0)
+                        window = pg.display.set_mode((int(DESIGN_W*scale), int(DESIGN_H*scale)), flags)
+                    # store back into globals and recompute offsets
+                    globals()['window'] = window
+                    # recompute scale/offset immediately and also after a short delay to ensure window size updates
+                    compute_scale_and_offset()
+                    if DEBUG_SCALE:
+                        w, h = window.get_size()
+                        cs = min(w / DESIGN_W, h / DESIGN_H)
+                        print(f"[DEBUG_SCALE] fullscreen={fullscreen} window_size={(w,h)} computed_scale={cs:.4f}")
+                    # Use present() to centralize flipping and ensure correct scaling
+                    present()
+                    # When entering fullscreen, grab input to ensure mouse/events are delivered
                     try:
-                        # Try pygame's toggle_fullscreen (works on some platforms)
-                        pg.display.toggle_fullscreen()
+                        pg.event.set_grab(fullscreen)
                     except Exception:
-                        # Fallback to set_mode
-                        if fullscreen:
-                            screen = pg.display.set_mode((WIDTH, HEIGHT), pg.FULLSCREEN)
-                        else:
-                            screen = pg.display.set_mode((WIDTH, HEIGHT))
-                    # Ensure global screen is updated
-                    globals()['screen'] = screen
+                        pass
                 if event.key == pg.K_SPACE:
                     # Try to pick up an item if in range
                     pickup_range = 60
@@ -437,26 +548,28 @@ def run_game():
                 slot_rects = [pg.Rect(startx + i*(size+margin), starty, size, size) for i in range(10)]
                 armor_rects = [(slot, pg.Rect(center_x-80, center_y-40+idx*45, 40, 40)) for idx, slot in enumerate(armor_slots)]
                 global dragging_item, drag_offset, drag_pos
-                mouse_x, mouse_y = pg.mouse.get_pos()
+                mouse_x, mouse_y = get_mouse_pos()
                 mouse_held = pg.mouse.get_pressed()[0]
                 if event.type == pg.MOUSEBUTTONDOWN and event.button == 1 and not dragging_item:
+                    pos = map_window_to_logical(event.pos)
                     for i, r in enumerate(slot_rects):
-                        if r.collidepoint(event.pos) and player.inventory[i]:
+                        if r.collidepoint(pos) and player.inventory[i]:
                             dragging_item = (player.inventory[i], i)
-                            drag_offset = (event.pos[0] - r.x, event.pos[1] - r.y)
+                            drag_offset = (pos[0] - r.x, pos[1] - r.y)
                             break
                     # Start dragging from armor slots (for unequip)
                     for slot, slot_rect in armor_rects:
-                        if slot_rect.collidepoint(event.pos) and player.armor[slot]:
+                        if slot_rect.collidepoint(pos) and player.armor[slot]:
                             dragging_item = (player.armor[slot], slot)
-                            drag_offset = (event.pos[0] - slot_rect.x, event.pos[1] - slot_rect.y)
+                            drag_offset = (pos[0] - slot_rect.x, pos[1] - slot_rect.y)
                             break
                 if event.type == pg.MOUSEBUTTONUP and event.button == 1 and dragging_item:
+                    pos = map_window_to_logical(event.pos)
                     item, from_slot = dragging_item
                     dropped = False
                     # Dropping onto armor slot (equip)
                     for slot, slot_rect in armor_rects:
-                        if slot_rect.collidepoint(event.pos):
+                        if slot_rect.collidepoint(pos):
                             if item.type == slot:
                                 # If equipping from inventory
                                 if isinstance(from_slot, int):
@@ -472,7 +585,7 @@ def run_game():
                     # Dropping onto inventory slot (unequip)
                     if not dropped and isinstance(from_slot, str):
                         for i, r in enumerate(slot_rects):
-                            if r.collidepoint(event.pos) and player.inventory[i] is None:
+                            if r.collidepoint(pos) and player.inventory[i] is None:
                                 player.inventory[i] = item
                                 player.armor[from_slot] = None
                                 dropped = True
@@ -519,12 +632,12 @@ def run_game():
             player.hp = player.max_hp
             player.invincible_until = pg.time.get_ticks() + 2000
 
-        pg.display.flip()
+        present()
         if game_over:
             # Show game over message
             txt = font20.render("GAME OVER", True, (255, 50, 50))
             screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - txt.get_height()//2))
-            pg.display.flip()
+            present()
             pg.time.wait(2000)
             show_start_screen()
             return
@@ -534,7 +647,7 @@ def draw_full_inventory(surf, player):
     margin, size = 20, 50
     startx, starty = 100, 100
     global dragging_item, drag_offset, drag_pos
-    mouse_x, mouse_y = pg.mouse.get_pos()
+    mouse_x, mouse_y = get_mouse_pos()
     slot_rects = []
     armor_slots = ["helmet", "chest", "legs", "boots"]
     armor_rects = []
@@ -564,16 +677,32 @@ def draw_full_inventory(surf, player):
     # Only start dragging on mouse down, keep dragging while held, drop on mouse up
     for event in pg.event.get([pg.MOUSEBUTTONDOWN, pg.MOUSEBUTTONUP]):
         if event.type == pg.MOUSEBUTTONDOWN and event.button == 1 and not dragging_item:
+            pos = map_window_to_logical(event.pos)
             for i, r in enumerate(slot_rects):
-                if r.collidepoint(event.pos) and player.inventory[i]:
+                if r.collidepoint(pos) and player.inventory[i]:
                     dragging_item = (player.inventory[i], i)
-                    drag_offset = (event.pos[0] - r.x, event.pos[1] - r.y)
+                    drag_offset = (pos[0] - r.x, pos[1] - r.y)
                     break
+                # Toggle borderless window mode at runtime (press B)
+                if event.key == pg.K_b:
+                    # flip the BORDERLESS preference and recreate window if not fullscreen
+                    try:
+                        BORDERLESS = not globals().get('BORDERLESS', True)
+                    except Exception:
+                        BORDERLESS = True
+                    if not fullscreen:
+                        flags = pg.RESIZABLE | (pg.NOFRAME if BORDERLESS else 0)
+                        window = pg.display.set_mode((int(DESIGN_W*scale), int(DESIGN_H*scale)), flags)
+                        globals()['window'] = window
+                        compute_scale_and_offset()
+                    if DEBUG_SCALE:
+                        print(f"[DEBUG_SCALE] BORDERLESS set to {BORDERLESS} fullscreen={fullscreen}")
         if event.type == pg.MOUSEBUTTONUP and event.button == 1 and dragging_item:
+            pos = map_window_to_logical(event.pos)
             item, from_slot = dragging_item
             dropped = False
             for slot, slot_rect in armor_rects:
-                if slot_rect.collidepoint(event.pos):
+                if slot_rect.collidepoint(pos):
                     if item.type == slot:
                         player.armor[slot] = item
                         player.inventory[from_slot] = None
@@ -630,7 +759,7 @@ def draw_full_inventory_with_drag(surf, player):
     global dragging_item, drag_offset, drag_pos
     margin, size = 20, 50
     startx, starty = 100, 100
-    mouse_x, mouse_y = pg.mouse.get_pos()
+    mouse_x, mouse_y = get_mouse_pos()
     slot_rects = []
     armor_slots = ["helmet", "chest", "legs", "boots"]
     # Inventory slots
@@ -681,7 +810,7 @@ def draw_inventory(surf, player):
     startx = 20
     starty = HEIGHT - 83 + (40 - size)//2  # Align with new floor height, center inventory in ground
     global dragging_item, drag_pos
-    mouse_x, mouse_y = pg.mouse.get_pos()
+    mouse_x, mouse_y = get_mouse_pos()
     slot_rects = []
     for i in range(num_slots):
         r = pg.Rect(startx + i * (size + margin), starty, size, size)
@@ -732,13 +861,13 @@ def show_tavern(screen, player):
                 sys.exit()
             if event.type == pg.KEYDOWN:
                 if event.key == pg.K_ESCAPE:
-                    if offer_idx is not None:
-                        offer_idx = None  # Cancel offer bubble
-                        offer_msg = None
-                    else:
-                        tavern_waiting = False
-                        show_start_screen()
-                        return
+                        if offer_idx is not None:
+                            offer_idx = None  # Cancel offer bubble
+                            offer_msg = None
+                        else:
+                            tavern_waiting = False
+                            show_start_screen()
+                            return
                 if event.key == pg.K_e:
                     inv_open = not inv_open
                 if inv_open and offer_idx is not None and event.key == pg.K_RETURN:
@@ -764,22 +893,22 @@ def show_tavern(screen, player):
                         player.inventory[offer_idx] = None
                         save_player_data(player)
                     offer_idx = None
-            if inv_open and event.type == pg.MOUSEBUTTONDOWN and event.button == 3:
-                # Right click: check if on an item in the overlay grid only
-                mx, my = pg.mouse.get_pos()
-                slot_found = False
-                for i in range(10):
-                    r = pg.Rect(startx + i*(size+margin), starty, size, size)
-                    if r.collidepoint(mx, my):
-                        slot_found = True
-                        if player.inventory[i]:
-                            offer_idx = i
-                            offer_msg = None
-                        else:
-                            pass
-                            break
-                if not slot_found:
-                    pass
+                if inv_open and event.type == pg.MOUSEBUTTONDOWN and event.button == 3:
+                    # Right click: check if on an item in the overlay grid only
+                    pos = map_window_to_logical(pg.mouse.get_pos())
+                    slot_found = False
+                    for i in range(10):
+                        r = pg.Rect(startx + i*(size+margin), starty, size, size)
+                        if r.collidepoint(pos):
+                            slot_found = True
+                            if player.inventory[i]:
+                                offer_idx = i
+                                offer_msg = None
+                            else:
+                                pass
+                                break
+                    if not slot_found:
+                        pass
             screen.fill((60, 40, 30))
         if tavern_bg:
             screen.blit(tavern_bg, (0,0))
@@ -805,7 +934,7 @@ def show_tavern(screen, player):
                     pg.draw.rect(screen, (255,255,0), r.inflate(8,8), 5)
             # Draw dragged item if any (not used in tavern, but for consistency)
             global dragging_item, drag_pos
-            mouse_x, mouse_y = pg.mouse.get_pos()
+            mouse_x, mouse_y = get_mouse_pos()
             if dragging_item:
                 item, from_slot = dragging_item
                 item.draw(screen, mouse_x - drag_offset[0], mouse_y - drag_offset[1], size-20)
@@ -839,7 +968,7 @@ def show_tavern(screen, player):
                 pg.draw.rect(screen, (0,0,0), msg_rect, width=2, border_radius=10)
                 txt = font16.render(offer_msg, True, (0,0,0))
                 screen.blit(txt, (msg_rect.x+12, msg_rect.y+6))
-        pg.display.flip()
+        present()
         clock.tick(60)
 
 # ----------- START SCREEN -----------
@@ -874,7 +1003,7 @@ def show_start_screen():
     load_player_data(dummy_player)
     global screen
     while waiting:
-        mouse_pos = pg.mouse.get_pos()
+        mouse_pos = get_mouse_pos()
         hovered = [play_rect.collidepoint(mouse_pos), smeltery_rect.collidepoint(mouse_pos), tavern_rect.collidepoint(mouse_pos)]
         for event in pg.event.get():
             if event.type == pg.QUIT:
@@ -905,7 +1034,7 @@ def show_start_screen():
             grass_green = (50, 200, 50)
             txt = font20.render(button_labels[i], True, grass_green)
             screen.blit(txt, (shaken_rect.x + shaken_rect.w//2 - txt.get_width()//2, shaken_rect.y + shaken_rect.h//2 - txt.get_height()//2))
-        pg.display.flip()
+        present()
         clock.tick(60)
 
 
@@ -1249,7 +1378,7 @@ class Player(Entity):
             if now - self.last_attack < FIST_SPEED:
                 return
             self.last_attack = now
-            mx, my = pg.mouse.get_pos()
+            mx, my = get_mouse_pos()
             ang = angle(self.rect.center, (mx, my))
             r = FIST_RANGE
             dmg = FIST_DAMAGE
@@ -1263,12 +1392,13 @@ class Player(Entity):
         if now - self.last_attack < self.weapon.attack_speed:
             return
         self.last_attack = now
-        mx, my = pg.mouse.get_pos()
+        mx, my = get_mouse_pos()
         ang = angle(self.rect.center, (mx, my))
         r = {"dagger":DAGGER_RANGE,"sword":SWORD_RANGE,"rapier":RAPIER_RANGE}[self.weapon.type]
         EXTRA = 50
         r += EXTRA
-        hitbox = self.rect.centerx + math.cos(math.radians(ang))*r, self.rect.centery + math.sin(math.radians(ang))*r
+        hitbox = (self.rect.centerx + math.cos(math.radians(ang))*r,
+                  self.rect.centery + math.sin(math.radians(ang))*r)
         dmg = self.weapon.dmg
         # backstab for dagger
         if self.weapon.type == "dagger":
@@ -1299,7 +1429,7 @@ class Player(Entity):
         """
         if not self.weapon or self.weapon.type != "rapier": return
         if self.throwing: return
-        mx, my = pg.mouse.get_pos()
+        mx, my = get_mouse_pos()
         ang = angle(self.rect.center, (mx, my))
         self.throwing = ThrownRapier(self.rect.center, ang, self.weapon.dmg*2)
     def update(self, platforms, enemies, now):
